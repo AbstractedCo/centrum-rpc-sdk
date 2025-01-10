@@ -1,0 +1,110 @@
+[package]
+name = "centrum-sdk"
+version = "0.1.0"
+edition = "2021"
+targets = ["wasm32-unknown-unknown"]
+
+[lints.clippy]
+unused_imports = { level = "allow", priority = 1 }
+
+[lints.rust]
+unused_imports = { level = "allow", priority = 1 }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+
+[dependencies]
+alloy = { version = "0.9.2", default-features = false, features = [
+    "wasm-bindgen",
+    "contract",
+    "signer-local",
+    "provider-http",
+    "reqwest",
+] }
+array-bytes = { version = "6.2.3", default-features = false }
+bitcoincore-rpc = { version = "0.19.0" }
+bitcoincore-rpc-json = { version = "0.19.0" }
+codec = { package = "parity-scale-codec", version = "3.6.12", features = [
+    "derive",
+], default-features = false }
+frame-metadata = { version = "17.0.0", features = [
+    "current",
+], default-features = false }
+getrandom = { version = "*", features = ["js"] }
+hex = { version = "0.4.3", features = ["alloc"], default-features = false }
+hex-literal = { version = "0.4.1", default-features = false }
+impl-serde = { version = "0.5.0", default-features = false }
+jsonrpsee = { version = "0.24.5" }
+log = { version = "0.4.22", default-features = false }
+merkleized-metadata = { version = "0.1.0", default-features = false }
+scale-decode = { version = "0.14.0", features = [
+    "derive",
+], default-features = false }
+scale-encode = { version = "0.8.0", features = [
+    "derive",
+], default-features = false }
+scale-info = { version = "2.11.5", default-features = false }
+scale-value = { version = "0.14.0", default-features = false }
+serde = { version = "1.0.145", default-features = false }
+serde_cbor = { version = "0.11.2", default-features = false }
+serde_json = { version = "1.0.114", default-features = false }
+sp-core = { version = "34.0.0", features = [
+    "full_crypto",
+], default-features = false }
+sp-crypto-hashing = { version = "0.1.0", default-features = false }
+sp-runtime = { version = "39.0.0", default-features = false }
+sp-std = { version = "14.0.0", default-features = false }
+
+subxt-core = { version = "0.38.0", default-features = false }
+subxt-signer = { version = "0.38.0", default-features = false, features = [
+    "sr25519",
+    "ecdsa",
+    "subxt",
+    "unstable-eth",
+] }
+tokio = { version = "1.41.1", features = ["rt"], default-features = false }
+wasm-bindgen = { version = "0.2.86", default-features = false }
+wasm-bindgen-futures = { version = "0.4.36", default-features = false }
+
+
+centrum-runtime = { path = "../centrum/runtime", default-features = false }
+centrum-primitives = { path = "../centrum/primitives", default-features = false }
+
+# for native builds
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+subxt = { version = "0.38.0" }
+
+# form wasm builds
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+subxt = { version = "0.38.0", default-features = false, features = [
+    "jsonrpsee",
+    "web",
+] }
+
+[features]
+default = ["std"]
+std = [
+    "frame-metadata/std",
+    "hex/std",
+    "impl-serde/std",
+    "codec/std",
+    "scale-decode/std",
+    "scale-encode/std",
+    "scale-info/std",
+    "serde/std",
+    "serde_json/std",
+    "serde_cbor/std",
+    "sp-crypto-hashing/std",
+    "sp-runtime/std",
+    "sp-std/std",
+    "sp-core/std",
+    "centrum-runtime/std",
+    "centrum-primitives/std",
+    "jsonrpsee/wasm-client",
+    "wasm-bindgen/std",
+    "wasm-bindgen-futures/std",
+    "subxt-core/std",
+    "getrandom/js",
+    "log/std",
+]
