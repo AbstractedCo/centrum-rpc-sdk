@@ -59,7 +59,7 @@ impl Config for CentrumConfig {
     Serialize,
     Deserialize,
 )]
-pub struct CentrumMultiAccount(CentrumAccountId);
+pub struct CentrumMultiAccount(pub CentrumAccountId);
 
 impl From<CentrumMultiAccount> for CentrumAddress {
     fn from(value: CentrumMultiAccount) -> Self {
@@ -95,7 +95,7 @@ impl From<sp_core::crypto::AccountId32> for CentrumMultiAccount {
 #[derive(
     Eq, PartialEq, Clone, Encode, Decode, Debug, TypeInfo, Serialize, Deserialize, MaxEncodedLen,
 )]
-pub struct CentrumMultiSignature(CentrumSignature);
+pub struct CentrumMultiSignature(pub CentrumSignature);
 
 impl From<CentrumMultiSignature> for CentrumSignature {
     fn from(value: CentrumMultiSignature) -> Self {
@@ -111,59 +111,26 @@ impl From<CentrumSignature> for CentrumMultiSignature {
 
 impl From<subxt_signer::sr25519::Keypair> for CentrumMultiSigner {
     fn from(pair: subxt_signer::sr25519::Keypair) -> Self {
-        CentrumMultiSigner::Sr25519(pair)
-    }
-}
-
-impl From<subxt_signer::ecdsa::Keypair> for CentrumMultiSigner {
-    fn from(pair: subxt_signer::ecdsa::Keypair) -> Self {
-        CentrumMultiSigner::Ecdsa(pair)
+        CentrumMultiSigner(pair)
     }
 }
 
 /// An idea to abstract over the different signers
 #[derive(Debug, Clone)]
-pub enum CentrumMultiSigner {
-    /// Wrapped ECDSA keypair.
-    Ecdsa(subxt_signer::ecdsa::Keypair),
-    /// Wrapped SR25519 keypair.
-    Sr25519(subxt_signer::sr25519::Keypair),
-}
+pub struct CentrumMultiSigner(pub subxt_signer::sr25519::Keypair);
 
 impl subxt::tx::Signer<CentrumConfig> for CentrumMultiSigner {
     fn account_id(&self) -> <CentrumConfig as Config>::AccountId {
-        match self {
-            CentrumMultiSigner::Ecdsa(pair) => {
-                CentrumAccountId::PublicKey(pair.public_key().to_account_id().0.into())
-            }
-            CentrumMultiSigner::Sr25519(pair) => {
-                CentrumAccountId::PublicKey(pair.public_key().0.into())
-            }
-        }
+        CentrumAccountId::PublicKey(self.0.public_key().0.into())
     }
 
     fn address(&self) -> <CentrumConfig as Config>::Address {
-        match self {
-            CentrumMultiSigner::Ecdsa(pair) => {
-                CentrumAccountId::PublicKey(pair.public_key().to_account_id().0.into()).into()
-            }
-            CentrumMultiSigner::Sr25519(pair) => {
-                CentrumAccountId::PublicKey(pair.public_key().0.into()).into()
-            }
-        }
+        CentrumAccountId::PublicKey(self.0.public_key().0.into()).into()
     }
 
     fn sign(&self, signer_payload: &[u8]) -> <CentrumConfig as Config>::Signature {
-        match self {
-            CentrumMultiSigner::Ecdsa(pair) => {
-                let signature = pair.sign(signer_payload);
-                CentrumSignature::new(sp_runtime::MultiSignature::Ecdsa(signature.0.into()))
-            }
-            CentrumMultiSigner::Sr25519(pair) => {
-                let signature = pair.sign(signer_payload);
-                CentrumSignature::new(sp_runtime::MultiSignature::Sr25519(signature.0.into()))
-            }
-        }
+        let signature = self.0.sign(signer_payload);
+        CentrumSignature::new(sp_runtime::MultiSignature::Sr25519(signature.0.into()))
     }
 }
 

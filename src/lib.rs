@@ -1,17 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#[allow(unused_imports)]
 use codec::{Decode, Encode};
-use subxt::{config::ExtrinsicParams, tx::PartialExtrinsic};
+use ethers::types::transaction::request;
+use subxt_core::runtime_api::payload;
+
 // use frame_metadata::RuntimeMetadataPrefixed;
 use core::{default::Default, ops::Deref};
 use frame_metadata::RuntimeMetadataPrefixed;
 use merkleized_metadata::ExtraInfo;
 use scale_encode::EncodeAsType;
-use sp_core::{blake2_256, crypto::SecretUri, Pair};
+use sp_core::{blake2_256, Pair};
 use sp_runtime::AccountId32;
-use std::fs;
-use std::str::FromStr;
+use std::{fs, str::FromStr};
 
 #[cfg(not(test))]
 use log::{info, warn}; // Use log crate when building application
@@ -19,25 +19,43 @@ use log::{info, warn}; // Use log crate when building application
 #[cfg(test)]
 use std::{println as info, println as warn}; // Workaround to use prinltn! for logs
 
-#[allow(unused_imports)]
+use ethers::{
+    middleware::{MiddlewareBuilder, NonceManagerMiddleware},
+    prelude::{Http, Provider as EthProvider},
+    providers::Middleware,
+    types::{
+        transaction::eip2718::TypedTransaction, NameOrAddress, Signature as EthersSignature,
+        TransactionReceipt, TransactionRequest, U256,
+    },
+};
 use subxt::{
     backend::{
         legacy::LegacyRpcMethods,
         rpc::{self, RpcClient},
     },
     client::{OfflineClientT, OnlineClientT},
-    config::{substrate::MultiAddress::Address32, DefaultExtrinsicParamsBuilder},
+    config::{
+        substrate::MultiAddress::Address32, DefaultExtrinsicParamsBuilder, ExtrinsicParams, Header,
+    },
     dynamic::{At, Value},
-    // runtime_api::Payload,
-    tx::{Payload, Signer, SubmittableExtrinsic, ValidationResult},
-    utils::{MultiAddress, MultiSignature, Static},
-    // utils::Accound32,
+    ext,
+    runtime_api::Payload as ApiPayload,
+    tx::{PartialExtrinsic, Payload, Signer, SubmittableExtrinsic, ValidationResult},
+    utils::{MultiAddress, MultiSignature, Static, H160},
     OnlineClient,
 };
 
-// use subxt_signer::sr25519::dev;
+use subxt_signer::SecretUri;
+
+use tokio::time::{sleep, Duration};
+
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
+
 pub mod centrum_config;
 pub use centrum_config::*;
+pub mod signature_utils;
+use signature_utils::PublicKey;
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -48,7 +66,9 @@ const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
 
 // const METADATA_PATH: &str = "artifacts/metadata-centrum.scale";
 
-const _TOKEN_SYMBOL: &str = "UNIT";
+const _TOKEN_SYMBOL: &str = "Unit";
+
+const PATH: &[u8] = b"test";
 
 #[subxt::subxt(
     runtime_metadata_path = "artifacts/metadata-centrum.scale",
@@ -65,6 +85,8 @@ const _TOKEN_SYMBOL: &str = "UNIT";
 pub mod runtime {}
 
 pub type CentrumClient = OnlineClient<CentrumConfig>;
+
+pub type EthClient = NonceManagerMiddleware<EthProvider<Http>>;
 
 async fn start_rpc_client_from_url(url: &str) -> Result<RpcClient, subxt::error::Error> {
     RpcClient::from_url(url).await
@@ -106,16 +128,13 @@ pub fn csigner() -> CentrumMultiSigner {
 }
 
 /// for the demo
-pub async fn demo_sign_native_with_signer<S>(
+pub async fn demo_sign_native_with_signer(
     partial: &PartialExtrinsic<
         centrum_config::CentrumConfig,
         OnlineClient<centrum_config::CentrumConfig>,
     >,
-    signer: S,
-) -> CentrumSignature
-where
-    S: Signer<CentrumConfig>,
-{
+    signer: CentrumMultiSigner,
+) -> CentrumSignature {
     signer.sign(&partial.signer_payload())
 }
 
@@ -145,8 +164,8 @@ pub async fn submit_native_transaction(
     info!("waiting for transaction to be included...");
 
     match result.wait_for_finalized_success().await {
-        Ok(res) => {
-            info!("transaction finalized: {:?}", res);
+        Ok(_) => {
+            info!("transaction finalized");
             Ok(())
         }
         Err(err) => {
@@ -156,8 +175,71 @@ pub async fn submit_native_transaction(
     }
 }
 
+/// Submits a signature request extrinsic and waits for the signature to be delivered.
+pub async fn submit_mpc_signature_request(
+    ext: SubmittableExtrinsic<CentrumConfig, OnlineClient<CentrumConfig>>,
+) -> Result<runtime::mpc_manager::events::SignatureDelivered, subxt::error::Error> {
+    let result = ext.submit_and_watch().await?;
+
+    let client = start_local_client().await?;
+    let rpc = start_raw_local_rpc_client().await?;
+
+    let mut current_header = rpc.chain_get_header(None).await?.unwrap().number;
+
+    info!("submit native transaction result: {:?}", result);
+
+    info!("waiting for transaction to be included...");
+
+    let res = result.wait_for_finalized_success().await?;
+    info!("transaction finalized: {:?}", res);
+
+    let sig_request = res
+        .find_first::<runtime::mpc_manager::events::SignatureRequested>()?
+        .ok_or(subxt::error::Error::Other(
+            "signature request not found".to_string(),
+        ))?;
+
+    let _epsilon = sig_request.epsilon;
+
+    // todo!(re-write this crap for the love of god)
+    for _ in 1..=5 {
+        current_header += 1;
+        let bhash = {
+            let mut _bhash = rpc
+                .chain_get_block_hash(Some((current_header).into()))
+                .await?;
+            while let None = _bhash {
+                sleep(Duration::from_millis(3000)).await;
+                _bhash = rpc
+                    .chain_get_block_hash(Some((current_header).into()))
+                    .await?;
+            }
+            _bhash.unwrap()
+        };
+
+        let _e = client.events().at(bhash).await?;
+
+        let _ev: Vec<_> = _e
+            .find::<runtime::mpc_manager::events::SignatureDelivered>()
+            .filter_map(|e| e.ok())
+            .collect();
+        for e in _ev {
+            if e.epsilon == _epsilon {
+                info!("found signature event: {:?}", e);
+                // info!("Epsilon: {:?} \n big_r: {:?} \n payload: {:?} \n payload: {:?} \n delivered_by: {:?}", e.epsilon, e.s, e.big_r, e.payload, e.delivered_by);
+            }
+            return Ok(e);
+        }
+    }
+
+    Err(subxt::error::Error::Other(
+        "signature not found".to_string(),
+    ))
+}
+
 /// Creates a partial extrinsic with default params for offline signature.
 pub async fn create_partial_extrinsic<A>(
+    rpc: &LegacyRpcMethods<CentrumConfig>,
     client: &CentrumClient,
     account: A,
     payload: Box<dyn Payload>,
@@ -168,8 +250,6 @@ pub async fn create_partial_extrinsic<A>(
 where
     A: Into<CentrumMultiAccount>,
 {
-    let rpc = start_raw_local_rpc_client().await?;
-
     let current_nonce = rpc
         .system_account_next_index(&CentrumAccountId::from(account.into()))
         .await?;
@@ -184,86 +264,312 @@ where
 }
 
 /// todo!(Creates a partial extrinsic from a enum of possible extrinsics).
-pub async fn create_payload() -> Result<Box<dyn Payload>, Box<dyn std::error::Error>> {
+pub async fn create_payload() -> Result<Box<dyn Payload>, subxt::error::Error> {
     Ok(Box::new(runtime::tx().system().remark(vec![0u8; 32])))
 }
 
-// pub async fn request_mpc_signature
+pub async fn request_mpc_signature(payload: [u8; 32]) -> Box<dyn Payload> {
+    Box::new(
+        runtime::tx()
+            .mpc_manager()
+            .request_signature(payload, PATH.to_vec()),
+    )
+}
 
-// pub async fn
+pub async fn request_mpc_derived_account(
+    account: CentrumAccountId,
+) -> Result<PublicKey, Box<dyn std::error::Error>> {
+    let client = start_local_client().await?;
+
+    let values = (account, PATH).encode();
+
+    let call_result: PublicKey = client
+        .runtime_api()
+        .at_latest()
+        .await?
+        .call_raw::<PublicKey>("MpcManagerApi_derive_account", Some(&values))
+        .await?;
+
+    Ok(call_result)
+}
+
+pub async fn eth_sepolia_create_transfer_payload(
+    eth_provider: EthClient,
+    from: PublicKey,
+    dest: &str,
+) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
+    // let eth_provider = EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
+    //     .unwrap()
+    //     .nonce_manager(from.clone().to_eth_address());
+    eth_provider.initialize_nonce(None).await?;
+
+    let chain_id = eth_provider.get_chainid().await?.as_u64();
+
+    let eth_nonce = eth_provider.next();
+
+    let to = {
+        if let Ok(addr) = NameOrAddress::from_str(dest) {
+            addr
+        } else {
+            let addr = hex::decode("AD8A02c8D7E01C72228A027F9ccfbE9d78310ca9")?;
+            let addr = <[u8; 20] as TryFrom<Vec<u8>>>::try_from(addr)
+                .map_err(|_| subxt::error::Error::Other("Invalid address".to_string()))?;
+            NameOrAddress::Address(addr.into())
+        }
+    };
+
+    let mut eth_transaction: TypedTransaction = TransactionRequest {
+        from: Some(from.clone().to_eth_address()),
+        to: Some(to),
+        value: Some(100_000_000_000_000u128.into()),
+        nonce: Some(eth_nonce),
+        chain_id: Some(chain_id.into()),
+        gas: None,
+        gas_price: None,
+        data: None,
+    }
+    .into();
+
+    // eth_transaction.chain_id()
+
+    eth_provider
+        .fill_transaction(&mut eth_transaction, None)
+        .await
+        .unwrap();
+    Ok(eth_transaction)
+}
+
+pub async fn eth_sepolia_sign_and_send_transaction(
+    eth_provider: EthProvider<Http>,
+    eth_transaction: TypedTransaction,
+    eth_signature: ethers::types::Signature,
+) -> Result<TransactionReceipt, subxt::error::Error> {
+    let signed_transaction = eth_transaction.rlp_signed(&eth_signature);
+
+    eth_provider
+        .send_raw_transaction(signed_transaction)
+        .await
+        .unwrap()
+        .await
+        .unwrap()
+        .ok_or(subxt::error::Error::Other(
+            "failed to send eth transaction".to_string(),
+        ))
+}
+
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Clone)]
+pub struct MpcSignatureDelivered {
+    /// [u8; 32]
+    pub payload: Vec<u8>,
+    /// [u8; 32]
+    pub epsilon: Vec<u8>,
+    pub big_r: Vec<u8>,
+    pub s: Vec<u8>,
+}
+
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct Demo {
+    #[wasm_bindgen(skip)]
+    pub client: CentrumClient,
+    #[wasm_bindgen(skip)]
+    pub rpc: LegacyRpcMethods<CentrumConfig>,
+    #[wasm_bindgen(skip)]
+    pub signer: CentrumMultiSigner,
+    #[wasm_bindgen(getter_with_clone)]
+    pub signer_mpc_public_key: PublicKey,
+}
+
+#[wasm_bindgen]
+impl Demo {
+    #[wasm_bindgen(constructor)]
+    pub async fn new_alice(url: &str) -> Result<Demo, JsError> {
+        let signer = csigner();
+        Ok(Demo {
+            client: start_client_from_url(url).await?,
+            rpc: start_raw_rpc_client_from_url(url).await?,
+            signer: signer.clone(),
+            signer_mpc_public_key: request_mpc_derived_account(CentrumAccountId::PublicKey(
+                signer.0.public_key().0.into(),
+            ))
+            .await
+            .map_err(|_| {
+                subxt::error::Error::Other("failed to derive MPC public key".to_string())
+            })?,
+        })
+    }
+
+    #[wasm_bindgen(constructor)]
+    pub async fn new_from_phrase(url: &str, seed_phrase: &str) -> Result<Demo, JsError> {
+        let uri = SecretUri::from_str(seed_phrase)
+            .map_err(|_| subxt::error::Error::Other("failed to parse seed phrase".to_string()))?;
+        let signer: CentrumMultiSigner = subxt_signer::sr25519::Keypair::from_uri(&uri)
+            .map_err(|_| {
+                subxt::error::Error::Other("failed to create signer from phrase".to_string())
+            })?
+            .into();
+        Ok(Demo {
+            client: start_client_from_url(url).await?,
+            rpc: start_raw_rpc_client_from_url(url).await?,
+            signer: signer.clone(),
+            signer_mpc_public_key: request_mpc_derived_account(CentrumAccountId::PublicKey(
+                signer.0.public_key().0.into(),
+            ))
+            .await
+            .map_err(|_| {
+                subxt::error::Error::Other("failed to derive MPC public key".to_string())
+            })?,
+        })
+    }
+
+    pub async fn request_mpc_signature(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<MpcSignatureDelivered, JsError> {
+        let payload: [u8; 32] = payload.try_into().map_err(|_| {
+            subxt::error::Error::Other("failed to convert payload to [u8; 32]".to_string())
+        })?;
+        // payload.truncate(32);
+        let partial_ext = create_partial_extrinsic(
+            &self.rpc,
+            &self.client,
+            self.signer.account_id(),
+            request_mpc_signature(payload).await,
+        )
+        .await?;
+
+        let submittable = apply_native_signature_to_transaction(
+            &partial_ext,
+            self.signer.account_id(),
+            demo_sign_native_with_signer(&partial_ext, self.signer.clone()).await,
+        )
+        .await;
+
+        let delivered = submit_mpc_signature_request(submittable).await?;
+
+        Ok(MpcSignatureDelivered {
+            payload: payload.to_vec(),
+            epsilon: delivered.epsilon.to_vec(),
+            big_r: delivered.big_r.to_vec(),
+            s: delivered.s.to_vec(),
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    async fn alice_submit_request_mpc_signature_works() -> Result<(), subxt::error::Error> {
         let client = start_local_client().await?;
+        let rpc = start_raw_local_rpc_client().await?;
 
-        let account = subxt_signer::sr25519::dev::alice().public_key().0;
+        let alice_signer = csigner();
 
-        let partial_ext =
-            create_partial_extrinsic(&client, account.clone(), create_payload().await?).await?;
+        let partial_ext = create_partial_extrinsic(
+            &rpc,
+            &client,
+            alice_signer.account_id(),
+            request_mpc_signature([0; 32]).await,
+        )
+        .await?;
 
         let submittable = apply_native_signature_to_transaction(
             &partial_ext,
-            account,
-            demo_sign_native_with_signer(&partial_ext, csigner()).await,
+            alice_signer.account_id(),
+            demo_sign_native_with_signer(&partial_ext, alice_signer).await,
         )
         .await;
 
-        submit_native_transaction(submittable).await?;
+        submit_mpc_signature_request(submittable).await?;
+        Ok(())
+    }
 
-        assert!(false);
+    #[tokio::test(flavor = "current_thread")]
+    async fn alice_submit_rpc_derive_account_works() -> Result<(), Box<dyn std::error::Error>> {
+        let account = request_mpc_derived_account(
+            CentrumMultiAccount::from(subxt_signer::sr25519::dev::alice().public_key().0).0,
+        )
+        .await;
 
-        // let api = start_local_client().await?;
-
-        // let _metadata: Vec<u8> = fs::read(METADATA_PATH)?;
-        // let runtime_metadata = RuntimeMetadataPrefixed::decode(&mut &_metadata[..]).map(|x| x.1)?;
-
-        // println!("Runtime metadata: {:?}", runtime_metadata);
-
-        // let alice_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::alice().into();
-        // let bob_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::bob().into();
-
-        // let alice_account: Static<centrum_primitives::Account> =
-        //     Static(alice_pair.clone().account_id());
-
-        // let bob_account: Static<centrum_primitives::Account> = Static(bob_pair.clone().account_id());
-
-        // let old_alice: centrum_primitives::Account = alice_pair.clone().account_id();
-
-        // let rmrk = api
-        //     .tx()
-        //     .sign_and_submit_then_watch_default(
-        //         &runtime::tx().system().remark(vec![0u8; 32]),
-        //         &alice_pair,
-        //     )
-        //     .await?
-        //     .wait_for_finalized_success()
-        //     .await?;
-
-        // println!("remark tx: {:?}", rmrk);
-
-        // let alice_account_sys = runtime::storage().system().account(alice_account);
-
-        // let result = api.storage().at_latest().await?.fetch(&query).await?;
-
-        // let value = result.unwrap();
-
-        // let _a = runtime::storage().system().account(&alice_account);
-        // let _b = runtime::storage().system().account(&bob_account);
-
-        // println!(
-        //     "Alice account data: {:?}",
-        //     api.storage().at_latest().await?.fetch(&_a).await?
-        // );
-
-        // println!(
-        //     "Bob account data: {:?}",
-        //     api.storage().at_latest().await?.fetch(&_b).await?
-        // );
+        info!("Alice Account: {:?}", account);
 
         Ok(())
     }
+
+    #[ignore]
+    #[tokio::test(flavor = "current_thread")]
+    async fn alice_submit_remark_works() -> Result<(), subxt::error::Error> {
+        let client = start_local_client().await?;
+        let rpc = start_raw_local_rpc_client().await?;
+
+        let alice_signer = csigner();
+
+        let partial_ext = create_partial_extrinsic(
+            &rpc,
+            &client,
+            alice_signer.account_id(),
+            create_payload().await?,
+        )
+        .await?;
+
+        let submittable = apply_native_signature_to_transaction(
+            &partial_ext,
+            alice_signer.account_id(),
+            demo_sign_native_with_signer(&partial_ext, alice_signer).await,
+        )
+        .await;
+
+        submit_native_transaction(submittable).await
+    }
 }
+
+// let api = start_local_client().await?;
+
+// let _metadata: Vec<u8> = fs::read(METADATA_PATH)?;
+// let runtime_metadata = RuntimeMetadataPrefixed::decode(&mut &_metadata[..]).map(|x| x.1)?;
+
+// println!("Runtime metadata: {:?}", runtime_metadata);
+
+// let alice_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::alice().into();
+// let bob_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::bob().into();
+
+// let alice_account: Static<centrum_primitives::Account> =
+//     Static(alice_pair.clone().account_id());
+
+// let bob_account: Static<centrum_primitives::Account> = Static(bob_pair.clone().account_id());
+
+// let old_alice: centrum_primitives::Account = alice_pair.clone().account_id();
+
+// let rmrk = api
+//     .tx()
+//     .sign_and_submit_then_watch_default(
+//         &runtime::tx().system().remark(vec![0u8; 32]),
+//         &alice_pair,
+//     )
+//     .await?
+//     .wait_for_finalized_success()
+//     .await?;
+
+// println!("remark tx: {:?}", rmrk);
+
+// let alice_account_sys = runtime::storage().system().account(alice_account);
+
+// let result = api.storage().at_latest().await?.fetch(&query).await?;
+
+// let value = result.unwrap();
+
+// let _a = runtime::storage().system().account(&alice_account);
+// let _b = runtime::storage().system().account(&bob_account);
+
+// println!(
+//     "Alice account data: {:?}",
+//     api.storage().at_latest().await?.fetch(&_a).await?
+// );
+
+// println!(
+//     "Bob account data: {:?}",
+//     api.storage().at_latest().await?.fetch(&_b).await?
+// );
