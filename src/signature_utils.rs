@@ -257,8 +257,7 @@ pub fn eth_sign_transaction(
     mpc_public_key: PublicKey,
 ) -> Result<EthersSignature, Box<dyn std::error::Error>> {
     let big_r =
-        AffinePoint::from_encoded_point(&EncodedPoint::from_bytes(mpc_signature.big_r).unwrap())
-            .unwrap();
+        AffinePoint::from_encoded_point(&EncodedPoint::from_bytes(mpc_signature.big_r)?).unwrap();
 
     let s = scalar_from_bytes(&mpc_signature.s);
 

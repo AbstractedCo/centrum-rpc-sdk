@@ -119,4 +119,5 @@ std = [
     "subxt-core/std",
     "getrandom/js",
     "log/std",
+    "elliptic-curve/std",
 ]

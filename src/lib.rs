@@ -1,7 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use bitcoincore_rpc::jsonrpc::client;
 use codec::{Decode, Encode};
-use ethers::types::transaction::request;
+use ethers::{middleware::signer, types::transaction::request};
+use serde::{Deserialize, Serialize};
 use subxt_core::runtime_api::payload;
 
 // use frame_metadata::RuntimeMetadataPrefixed;
@@ -11,7 +13,7 @@ use merkleized_metadata::ExtraInfo;
 use scale_encode::EncodeAsType;
 use sp_core::{blake2_256, Pair};
 use sp_runtime::AccountId32;
-use std::{fs, str::FromStr};
+use sp_std::{str::FromStr, sync::Arc};
 
 #[cfg(not(test))]
 use log::{info, warn}; // Use log crate when building application
@@ -28,6 +30,7 @@ use ethers::{
         TransactionReceipt, TransactionRequest, U256,
     },
 };
+
 use subxt::{
     backend::{
         legacy::LegacyRpcMethods,
@@ -55,7 +58,7 @@ use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
 pub mod centrum_config;
 pub use centrum_config::*;
 pub mod signature_utils;
-use signature_utils::PublicKey;
+use signature_utils::{eth_sign_transaction, PublicKey};
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -85,7 +88,7 @@ const PATH: &[u8] = b"test";
 pub mod runtime {}
 
 pub type CentrumClient = OnlineClient<CentrumConfig>;
-
+pub type CentrumRpcClient = LegacyRpcMethods<CentrumConfig>;
 pub type EthClient = NonceManagerMiddleware<EthProvider<Http>>;
 
 async fn start_rpc_client_from_url(url: &str) -> Result<RpcClient, subxt::error::Error> {
@@ -108,8 +111,7 @@ pub async fn start_local_client() -> Result<CentrumClient, subxt::error::Error> 
     OnlineClient::<CentrumConfig>::from_rpc_client(start_local_rpc_client().await?).await
 }
 
-pub async fn start_raw_local_rpc_client(
-) -> Result<LegacyRpcMethods<CentrumConfig>, subxt::error::Error> {
+pub async fn start_raw_local_rpc_client() -> Result<CentrumRpcClient, subxt::error::Error> {
     Ok(LegacyRpcMethods::<CentrumConfig>::new(
         start_local_rpc_client().await?,
     ))
@@ -117,7 +119,7 @@ pub async fn start_raw_local_rpc_client(
 
 pub async fn start_raw_rpc_client_from_url(
     url: &str,
-) -> Result<LegacyRpcMethods<CentrumConfig>, subxt::error::Error> {
+) -> Result<CentrumRpcClient, subxt::error::Error> {
     Ok(LegacyRpcMethods::<CentrumConfig>::new(
         start_rpc_client_from_url(url).await?,
     ))
@@ -133,7 +135,7 @@ pub async fn demo_sign_native_with_signer(
         centrum_config::CentrumConfig,
         OnlineClient<centrum_config::CentrumConfig>,
     >,
-    signer: CentrumMultiSigner,
+    signer: &CentrumMultiSigner,
 ) -> CentrumSignature {
     signer.sign(&partial.signer_payload())
 }
@@ -177,12 +179,11 @@ pub async fn submit_native_transaction(
 
 /// Submits a signature request extrinsic and waits for the signature to be delivered.
 pub async fn submit_mpc_signature_request(
+    client: &CentrumClient,
+    rpc: &CentrumRpcClient,
     ext: SubmittableExtrinsic<CentrumConfig, OnlineClient<CentrumConfig>>,
 ) -> Result<runtime::mpc_manager::events::SignatureDelivered, subxt::error::Error> {
     let result = ext.submit_and_watch().await?;
-
-    let client = start_local_client().await?;
-    let rpc = start_raw_local_rpc_client().await?;
 
     let mut current_header = rpc.chain_get_header(None).await?.unwrap().number;
 
@@ -239,7 +240,7 @@ pub async fn submit_mpc_signature_request(
 
 /// Creates a partial extrinsic with default params for offline signature.
 pub async fn create_partial_extrinsic<A>(
-    rpc: &LegacyRpcMethods<CentrumConfig>,
+    rpc: &CentrumRpcClient,
     client: &CentrumClient,
     account: A,
     payload: Box<dyn Payload>,
@@ -264,11 +265,11 @@ where
 }
 
 /// todo!(Creates a partial extrinsic from a enum of possible extrinsics).
-pub async fn create_payload() -> Result<Box<dyn Payload>, subxt::error::Error> {
+pub async fn create_rmrk_payload() -> Result<Box<dyn Payload>, subxt::error::Error> {
     Ok(Box::new(runtime::tx().system().remark(vec![0u8; 32])))
 }
 
-pub async fn request_mpc_signature(payload: [u8; 32]) -> Box<dyn Payload> {
+pub async fn request_mpc_signature_payload(payload: [u8; 32]) -> Box<dyn Payload> {
     Box::new(
         runtime::tx()
             .mpc_manager()
@@ -277,10 +278,9 @@ pub async fn request_mpc_signature(payload: [u8; 32]) -> Box<dyn Payload> {
 }
 
 pub async fn request_mpc_derived_account(
+    client: &CentrumClient,
     account: CentrumAccountId,
 ) -> Result<PublicKey, Box<dyn std::error::Error>> {
-    let client = start_local_client().await?;
-
     let values = (account, PATH).encode();
 
     let call_result: PublicKey = client
@@ -294,15 +294,10 @@ pub async fn request_mpc_derived_account(
 }
 
 pub async fn eth_sepolia_create_transfer_payload(
-    eth_provider: EthClient,
+    eth_provider: Arc<EthClient>,
     from: PublicKey,
     dest: &str,
 ) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
-    // let eth_provider = EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
-    //     .unwrap()
-    //     .nonce_manager(from.clone().to_eth_address());
-    eth_provider.initialize_nonce(None).await?;
-
     let chain_id = eth_provider.get_chainid().await?.as_u64();
 
     let eth_nonce = eth_provider.next();
@@ -340,7 +335,7 @@ pub async fn eth_sepolia_create_transfer_payload(
 }
 
 pub async fn eth_sepolia_sign_and_send_transaction(
-    eth_provider: EthProvider<Http>,
+    eth_provider: Arc<EthClient>,
     eth_transaction: TypedTransaction,
     eth_signature: ethers::types::Signature,
 ) -> Result<TransactionReceipt, subxt::error::Error> {
@@ -374,34 +369,52 @@ pub struct Demo {
     #[wasm_bindgen(skip)]
     pub client: CentrumClient,
     #[wasm_bindgen(skip)]
-    pub rpc: LegacyRpcMethods<CentrumConfig>,
+    pub rpc: CentrumRpcClient,
+    #[wasm_bindgen(skip)]
+    pub eth_client: Arc<EthClient>,
     #[wasm_bindgen(skip)]
     pub signer: CentrumMultiSigner,
     #[wasm_bindgen(getter_with_clone)]
     pub signer_mpc_public_key: PublicKey,
 }
 
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EthRecipt(TransactionReceipt);
+
 #[wasm_bindgen]
 impl Demo {
     #[wasm_bindgen(constructor)]
-    pub async fn new_alice(url: &str) -> Result<Demo, JsError> {
+    pub async fn new_alice(centrum_node_url: &str) -> Result<Demo, JsError> {
         let signer = csigner();
+        let client = start_client_from_url(centrum_node_url).await?;
+        let rpc = start_raw_rpc_client_from_url(centrum_node_url).await?;
+
+        let signer_mpc_public_key = request_mpc_derived_account(
+            &client,
+            CentrumAccountId::PublicKey(signer.0.public_key().0.into()),
+        )
+        .await
+        .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
+
+        let eth_client =
+            EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
+                .unwrap()
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address());
+        eth_client.initialize_nonce(None).await?;
         Ok(Demo {
-            client: start_client_from_url(url).await?,
-            rpc: start_raw_rpc_client_from_url(url).await?,
+            client,
+            rpc,
+            eth_client: Arc::new(eth_client),
             signer: signer.clone(),
-            signer_mpc_public_key: request_mpc_derived_account(CentrumAccountId::PublicKey(
-                signer.0.public_key().0.into(),
-            ))
-            .await
-            .map_err(|_| {
-                subxt::error::Error::Other("failed to derive MPC public key".to_string())
-            })?,
+            signer_mpc_public_key,
         })
     }
 
-    #[wasm_bindgen(constructor)]
-    pub async fn new_from_phrase(url: &str, seed_phrase: &str) -> Result<Demo, JsError> {
+    pub async fn new_from_phrase(
+        centrum_node_url: &str,
+        seed_phrase: &str,
+    ) -> Result<Demo, JsError> {
         let uri = SecretUri::from_str(seed_phrase)
             .map_err(|_| subxt::error::Error::Other("failed to parse seed phrase".to_string()))?;
         let signer: CentrumMultiSigner = subxt_signer::sr25519::Keypair::from_uri(&uri)
@@ -409,17 +422,29 @@ impl Demo {
                 subxt::error::Error::Other("failed to create signer from phrase".to_string())
             })?
             .into();
+
+        let client = start_client_from_url(centrum_node_url).await?;
+        let rpc = start_raw_rpc_client_from_url(centrum_node_url).await?;
+
+        let signer_mpc_public_key = request_mpc_derived_account(
+            &client,
+            CentrumAccountId::PublicKey(signer.0.public_key().0.into()),
+        )
+        .await
+        .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
+
+        let eth_client =
+            EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
+                .unwrap()
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address());
+        eth_client.initialize_nonce(None).await?;
+
         Ok(Demo {
-            client: start_client_from_url(url).await?,
-            rpc: start_raw_rpc_client_from_url(url).await?,
+            client,
+            rpc,
+            eth_client: Arc::new(eth_client),
             signer: signer.clone(),
-            signer_mpc_public_key: request_mpc_derived_account(CentrumAccountId::PublicKey(
-                signer.0.public_key().0.into(),
-            ))
-            .await
-            .map_err(|_| {
-                subxt::error::Error::Other("failed to derive MPC public key".to_string())
-            })?,
+            signer_mpc_public_key,
         })
     }
 
@@ -435,18 +460,18 @@ impl Demo {
             &self.rpc,
             &self.client,
             self.signer.account_id(),
-            request_mpc_signature(payload).await,
+            request_mpc_signature_payload(payload).await,
         )
         .await?;
 
         let submittable = apply_native_signature_to_transaction(
             &partial_ext,
             self.signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, self.signer.clone()).await,
+            demo_sign_native_with_signer(&partial_ext, &self.signer).await,
         )
         .await;
 
-        let delivered = submit_mpc_signature_request(submittable).await?;
+        let delivered = submit_mpc_signature_request(&self.client, &self.rpc, submittable).await?;
 
         Ok(MpcSignatureDelivered {
             payload: payload.to_vec(),
@@ -454,6 +479,82 @@ impl Demo {
             big_r: delivered.big_r.to_vec(),
             s: delivered.s.to_vec(),
         })
+    }
+
+    pub async fn request_mpc_signature_for_generic_payload(
+        &self,
+        payload: Vec<u8>,
+    ) -> Result<MpcSignatureDelivered, JsError> {
+        let payload: [u8; 32] = payload
+            .try_into()
+            .map_err(|_| JsError::new("Failed to convert payload to [u8; 32]"))?;
+        let partial_ext = create_partial_extrinsic(
+            &self.rpc,
+            &self.client,
+            self.signer.account_id(),
+            request_mpc_signature_payload(payload).await,
+        )
+        .await?;
+
+        let submittable = apply_native_signature_to_transaction(
+            &partial_ext,
+            self.signer.account_id(),
+            demo_sign_native_with_signer(&partial_ext, &self.signer).await,
+        )
+        .await;
+
+        let delivered = submit_mpc_signature_request(&self.client, &self.rpc, submittable).await?;
+        Ok(MpcSignatureDelivered {
+            payload: delivered.payload.to_vec(),
+            epsilon: delivered.epsilon.to_vec(),
+            big_r: delivered.big_r,
+            s: delivered.s,
+        })
+    }
+
+    pub async fn submit_eth_sepolia_transfer(
+        &self,
+        dest: String,
+        _amount: Option<u128>,
+    ) -> Result<EthRecipt, JsError> {
+        let client_eth = self.eth_client.clone();
+
+        let eth_payload = eth_sepolia_create_transfer_payload(
+            client_eth,
+            self.signer_mpc_public_key.clone(),
+            &dest,
+            // amount,
+        )
+        .await
+        .map_err(|_| JsError::new("Failed to create transfer payload"))?;
+
+        let eth_sighash = eth_payload.sighash();
+
+        let mpc_signature = self
+            .request_mpc_signature_for_generic_payload(eth_payload.sighash().0.to_vec())
+            .await?;
+
+        let eth_signature = eth_sign_transaction(
+            eth_sighash,
+            self.eth_client
+                .get_chainid()
+                .await
+                .map_err(|_| JsError::new("Failed to get chain id"))?
+                .as_u64(),
+            mpc_signature,
+            self.signer_mpc_public_key.clone(),
+        )
+        .map_err(|_| JsError::new("Failed to sign transaction"))?;
+
+        Ok(EthRecipt(
+            eth_sepolia_sign_and_send_transaction(
+                self.eth_client.clone(),
+                eth_payload,
+                eth_signature,
+            )
+            .await
+            .map_err(|_| JsError::new("Failed to send transaction"))?,
+        ))
     }
 }
 
@@ -472,24 +573,25 @@ mod tests {
             &rpc,
             &client,
             alice_signer.account_id(),
-            request_mpc_signature([0; 32]).await,
+            request_mpc_signature_payload([0; 32]).await,
         )
         .await?;
 
         let submittable = apply_native_signature_to_transaction(
             &partial_ext,
             alice_signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, alice_signer).await,
+            demo_sign_native_with_signer(&partial_ext, &alice_signer).await,
         )
         .await;
 
-        submit_mpc_signature_request(submittable).await?;
+        submit_mpc_signature_request(&client, &rpc, submittable).await?;
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn alice_submit_rpc_derive_account_works() -> Result<(), Box<dyn std::error::Error>> {
         let account = request_mpc_derived_account(
+            &start_local_client().await?,
             CentrumMultiAccount::from(subxt_signer::sr25519::dev::alice().public_key().0).0,
         )
         .await;
@@ -511,14 +613,14 @@ mod tests {
             &rpc,
             &client,
             alice_signer.account_id(),
-            create_payload().await?,
+            create_rmrk_payload().await?,
         )
         .await?;
 
         let submittable = apply_native_signature_to_transaction(
             &partial_ext,
             alice_signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, alice_signer).await,
+            demo_sign_native_with_signer(&partial_ext, &alice_signer).await,
         )
         .await;
 
