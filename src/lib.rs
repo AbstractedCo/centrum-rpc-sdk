@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use bitcoincore_rpc::jsonrpc::client;
 use codec::{Decode, Encode};
 use ethers::{middleware::signer, types::transaction::request};
 use serde::{Deserialize, Serialize};
@@ -14,12 +13,24 @@ use scale_encode::EncodeAsType;
 use sp_core::{blake2_256, Pair};
 use sp_runtime::AccountId32;
 use sp_std::{str::FromStr, sync::Arc};
+use std::collections::HashMap;
 
 #[cfg(not(test))]
 use log::{info, warn}; // Use log crate when building application
 
 #[cfg(test)]
 use std::{println as info, println as warn}; // Workaround to use prinltn! for logs
+
+use bitcoin::{
+    amount, hashes::hash160::Hash, Address as BitcoinAddress, Amount, CompressedPublicKey, KnownHrp,
+};
+use elliptic_curve::{
+    ops::Reduce,
+    point::AffineCoordinates,
+    scalar::FromUintUnchecked,
+    sec1::{FromEncodedPoint, ToEncodedPoint},
+    CurveArithmetic,
+};
 
 use ethers::{
     middleware::{MiddlewareBuilder, NonceManagerMiddleware},
@@ -58,7 +69,10 @@ use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
 pub mod centrum_config;
 pub use centrum_config::*;
 pub mod signature_utils;
-use signature_utils::{eth_sign_transaction, EthRecipt, PublicKey};
+use signature_utils::{
+    btc_sig_from_mpc_sig, eth_sign_transaction, testnet_btc_address, EthRecipt, PublicKey,
+    HUNDRED_SATS,
+};
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -90,6 +104,55 @@ pub mod runtime {}
 pub type CentrumClient = OnlineClient<CentrumConfig>;
 pub type CentrumRpcClient = LegacyRpcMethods<CentrumConfig>;
 pub type EthClient = NonceManagerMiddleware<EthProvider<Http>>;
+
+#[wasm_bindgen(module = "/functions.js")]
+extern "C" {
+    #[wasm_bindgen]
+    async fn buildTx(to: String, from: String, amount: String) -> JsValue;
+
+    #[wasm_bindgen]
+    async fn signPayloadPls(source: String, payload: JsValue) -> JsValue;
+
+    #[wasm_bindgen]
+    async fn buildUnsignedTransaction(from: String, to: String, amount: String) -> JsValue;
+
+    #[wasm_bindgen]
+    fn hashFromUnsignedTx(unsignedTx: JsValue) -> String;
+
+    #[wasm_bindgen]
+    async fn getBitcoinBalance(address: String) -> JsValue;
+
+    #[wasm_bindgen]
+    async fn fillTxAndSubmit(unsignedTx: JsValue, signature: String, pubkey: String) -> JsValue;
+}
+
+#[wasm_bindgen(module = "https://esm.sh/@polkadot/extension-dapp@latest")]
+extern "C" {
+    #[wasm_bindgen]
+    async fn web3Enable(dappName: String) -> JsValue;
+
+    #[wasm_bindgen]
+    async fn web3Accounts() -> JsValue;
+
+    #[wasm_bindgen]
+    async fn web3FromAddress(address: String) -> JsValue;
+}
+
+#[wasm_bindgen(module = "https://esm.sh/web3@latest")]
+extern "C" {
+    type Web3;
+
+    #[wasm_bindgen(constructor)]
+    fn new(endpoint: String) -> Web3;
+
+    type Web3EthInterface;
+
+    #[wasm_bindgen(method, getter)]
+    fn eth(this: &Web3) -> Web3EthInterface;
+
+    #[wasm_bindgen(method)]
+    async fn getBalance(this: &Web3EthInterface, address: String) -> JsValue;
+}
 
 async fn start_rpc_client_from_url(url: &str) -> Result<RpcClient, subxt::error::Error> {
     RpcClient::from_url(url).await
@@ -297,6 +360,7 @@ pub async fn eth_sepolia_create_transfer_payload(
     eth_provider: Arc<EthClient>,
     from: PublicKey,
     dest: &str,
+    amount: Option<u128>,
 ) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
     let chain_id = eth_provider.get_chainid().await?.as_u64();
 
@@ -313,10 +377,12 @@ pub async fn eth_sepolia_create_transfer_payload(
         }
     };
 
+    let amount = amount.unwrap_or(100_000_000_000_000u128);
+
     let mut eth_transaction: TypedTransaction = TransactionRequest {
         from: Some(from.clone().to_eth_address()),
         to: Some(to),
-        value: Some(100_000_000_000_000u128.into()),
+        value: Some(amount.into()),
         nonce: Some(eth_nonce),
         chain_id: Some(chain_id.into()),
         gas: None,
@@ -352,6 +418,53 @@ pub async fn eth_sepolia_sign_and_send_transaction(
         ))
 }
 
+pub async fn btc_create_transfer_payload(
+    from: PublicKey,
+    dest: &str,
+    amount: Option<u64>,
+) -> Result<BtcPayload, Box<dyn std::error::Error>> {
+    let encoded_point_compressed = from.into_affine().to_encoded_point(true);
+
+    let compressed_public_key =
+        CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
+
+    let from = testnet_btc_address(compressed_public_key);
+
+    let amount = bitcoin::Amount::from_sat(amount.unwrap_or(100));
+
+    let unsigned_tx = buildUnsignedTransaction(
+        from,
+        dest.to_string(),
+        // String::from("CFqoZmZ3ePwK5wnkhxJjJAQKJ82C7RJdmd"),
+        amount.to_sat().to_string(),
+    )
+    .await;
+
+    let sig_hash = hex::decode(hashFromUnsignedTx(unsigned_tx.clone()).replace("0x", "")).unwrap();
+
+    Ok(BtcPayload {
+        sighash: <[u8; 32]>::try_from(sig_hash)
+            .map_err(|_| subxt::error::Error::Other("Failed to convert to [u8; 32]".to_string()))?,
+        unsigned_tx,
+        compressed_public_key,
+    })
+}
+
+pub async fn btc_sign_and_send_transaction(
+    btc_payload: BtcPayload,
+    mpc_sig: MpcSignatureDelivered,
+) -> Result<String, JsError> {
+    let bitcoin_signature = btc_sig_from_mpc_sig(mpc_sig).signature.serialize_der();
+
+    let hex_sig = hex::encode(bitcoin_signature.to_vec());
+
+    let pubkey = hex::encode(btc_payload.compressed_public_key.to_bytes());
+
+    let res = fillTxAndSubmit(btc_payload.unsigned_tx, hex_sig, pubkey).await;
+
+    res.as_string().ok_or(JsError::new("Failed to get tx hash"))
+}
+
 #[wasm_bindgen(getter_with_clone)]
 #[derive(Debug, Clone)]
 pub struct MpcSignatureDelivered {
@@ -361,6 +474,13 @@ pub struct MpcSignatureDelivered {
     pub epsilon: Vec<u8>,
     pub big_r: Vec<u8>,
     pub s: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BtcPayload {
+    pub unsigned_tx: JsValue,
+    pub compressed_public_key: CompressedPublicKey,
+    pub sighash: [u8; 32],
 }
 
 #[wasm_bindgen]
@@ -376,6 +496,8 @@ pub struct Demo {
     pub signer: CentrumMultiSigner,
     #[wasm_bindgen(getter_with_clone)]
     pub signer_mpc_public_key: PublicKey,
+    #[wasm_bindgen(skip)]
+    pub compressed_public_key: CompressedPublicKey,
 }
 
 #[wasm_bindgen]
@@ -392,6 +514,13 @@ impl Demo {
         )
         .await
         .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
+        let encoded_point_compressed = signer_mpc_public_key
+            .clone()
+            .into_affine()
+            .to_encoded_point(true);
+
+        let compressed_public_key =
+            CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
 
         let eth_client =
             EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
@@ -404,6 +533,7 @@ impl Demo {
             eth_client: Arc::new(eth_client),
             signer: signer.clone(),
             signer_mpc_public_key,
+            compressed_public_key,
         })
     }
 
@@ -428,6 +558,13 @@ impl Demo {
         )
         .await
         .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
+        let encoded_point_compressed = signer_mpc_public_key
+            .clone()
+            .into_affine()
+            .to_encoded_point(true);
+
+        let compressed_public_key =
+            CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
 
         let eth_client =
             EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
@@ -441,6 +578,7 @@ impl Demo {
             eth_client: Arc::new(eth_client),
             signer: signer.clone(),
             signer_mpc_public_key,
+            compressed_public_key,
         })
     }
 
@@ -519,7 +657,7 @@ impl Demo {
             client_eth,
             self.signer_mpc_public_key.clone(),
             &dest,
-            // amount,
+            _amount,
         )
         .await
         .map_err(|_| JsError::new("Failed to create transfer payload"))?;
@@ -551,6 +689,56 @@ impl Demo {
             .await
             .map_err(|_| JsError::new("Failed to send transaction"))?,
         ))
+    }
+
+    pub async fn submit_btc_transfer(
+        &self,
+        dest: String,
+        _amount: Option<u64>,
+    ) -> Result<String, JsError> {
+        let btc_payload =
+            btc_create_transfer_payload(self.signer_mpc_public_key.clone(), &dest, _amount)
+                .await
+                .map_err(|_| JsError::new("Failed to create transfer payload"))?;
+
+        let mpc_signature = self
+            .request_mpc_signature_for_generic_payload(btc_payload.sighash.to_vec())
+            .await?;
+
+        btc_sign_and_send_transaction(btc_payload, mpc_signature).await
+    }
+
+    pub async fn query_eth_balance(&self) -> Result<String, JsError> {
+        let bal = self
+            .eth_client
+            .get_balance(self.signer_mpc_public_key.clone().to_eth_address(), None)
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
+    pub async fn query_btc_balance(&self) -> Result<String, JsError> {
+        let address = testnet_btc_address(self.compressed_public_key.clone());
+
+        let balance: f64 = serde_wasm_bindgen::from_value(getBitcoinBalance(address).await)?;
+
+        Ok(balance.to_string())
+    }
+
+    pub async fn query_native_balance(&self) -> Result<String, JsError> {
+        let account_sys = runtime::storage()
+            .system()
+            .account(Static::from(self.signer.account_id()));
+
+        let res = self
+            .client
+            .storage()
+            .at_latest()
+            .await?
+            .fetch(&account_sys)
+            .await?
+            .ok_or(JsError::new("No account found"))?;
+        Ok(res.data.free.to_string())
     }
 }
 

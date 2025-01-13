@@ -34,9 +34,8 @@ use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
 
 use crate::MpcSignatureDelivered;
 
-const PATH: &[u8] = b"test";
-const POINT_ZERO_ZERO_ONE_ETH: u128 = 1_000_000_000_000_000;
-const HUNDRED_SATS: Amount = Amount::from_sat(100);
+pub const POINT_ZERO_ZERO_ONE_ETH: u128 = 1_000_000_000_000_000;
+pub const HUNDRED_SATS: Amount = Amount::from_sat(100);
 
 #[wasm_bindgen(getter_with_clone)]
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -212,6 +211,17 @@ pub fn btc_sig(big_r: AffinePoint, s: Scalar) -> bitcoin::ecdsa::Signature {
     btc_sig
 }
 
+pub fn btc_sig_from_mpc_sig(mpc_sig: MpcSignatureDelivered) -> bitcoin::ecdsa::Signature {
+    let big_r =
+        AffinePoint::from_encoded_point(&EncodedPoint::from_bytes(mpc_sig.big_r.clone()).unwrap())
+            .unwrap();
+
+    let s = scalar_from_bytes(&mpc_sig.clone().s);
+
+    // let bitcoin_signature = btc_sig(big_r, s);
+    btc_sig(big_r, s)
+}
+
 pub fn x_coordinate_secp256k1(point: &k256::AffinePoint) -> k256::Scalar {
     <k256::Scalar as Reduce<<k256::Secp256k1 as elliptic_curve::Curve>::Uint>>::reduce_bytes(
         &point.x(),
@@ -226,7 +236,7 @@ fn scalar_from_bytes(bytes: &[u8]) -> Scalar {
     Scalar::from_uint_unchecked(k256::U256::from_be_slice(bytes))
 }
 
-fn testnet_btc_address(key: CompressedPublicKey) -> String {
+pub fn testnet_btc_address(key: CompressedPublicKey) -> String {
     let hash = key.pubkey_hash();
 
     let mut prefixed = [0; 21];
