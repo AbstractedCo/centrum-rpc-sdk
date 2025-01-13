@@ -12,7 +12,7 @@ use ethers::{
     providers::Middleware,
     types::{
         transaction::eip2718::TypedTransaction, NameOrAddress, Signature as EthersSignature,
-        TransactionRequest, H160, H256, U256,
+        TransactionReceipt, TransactionRequest, H160, H256, U256,
     },
 };
 use k256::{
@@ -272,6 +272,63 @@ pub fn eth_sign_transaction(
         payload_hash_scalar,
         chain_id,
     ))
+}
+
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EthRecipt {
+    /// Transaction hash.
+    #[serde(rename = "transactionHash")]
+    pub transaction_hash: Vec<u8>,
+    /// Index within the block.
+    #[serde(rename = "transactionIndex")]
+    pub transaction_index: u64,
+    /// Hash of the block this transaction was included within.
+    #[serde(rename = "blockHash")]
+    pub block_hash: Option<Vec<u8>>,
+    /// Number of the block this transaction was included within.
+    #[serde(rename = "blockNumber")]
+    pub block_number: Option<u64>,
+    /// address of the sender H160 => [u8;20].
+    pub from: Vec<u8>,
+    // address of the receiver. null when its a contract creation transaction  H160 => [u8;20].
+    pub to: Option<Vec<u8>>,
+    /// Cumulative gas used within the block after this was executed.
+    #[wasm_bindgen(skip)]
+    #[serde(rename = "cumulativeGasUsed")]
+    pub cumulative_gas_used: U256,
+    /// Gas used by this transaction alone.
+    ///
+    /// Gas used is `None` if the the client is running in light client mode.
+    #[wasm_bindgen(skip)]
+    #[serde(rename = "gasUsed")]
+    pub gas_used: Option<U256>,
+    /// Contract address created, or `None` if not a deployment.
+    #[serde(rename = "contractAddress")]
+    pub contract_address: Option<Vec<u8>>,
+    /// Logs generated within this transaction.
+    #[wasm_bindgen(skip)]
+    pub logs: Vec<ethers::types::Log>,
+    /// Status: either 1 (success) or 0 (failure). Only present after activation of [EIP-658](https://eips.ethereum.org/EIPS/eip-658)
+    pub status: Option<u64>,
+}
+
+impl From<TransactionReceipt> for EthRecipt {
+    fn from(value: TransactionReceipt) -> Self {
+        EthRecipt {
+            transaction_hash: value.transaction_hash.0.to_vec(),
+            transaction_index: value.transaction_index.as_u64(),
+            block_hash: value.block_hash.map(|x| x.0.to_vec()),
+            block_number: value.block_number.map(|x| x.as_u64()),
+            from: value.from.0.to_vec(),
+            to: value.to.map(|x| x.0.to_vec()),
+            cumulative_gas_used: value.cumulative_gas_used,
+            gas_used: value.gas_used,
+            contract_address: value.contract_address.map(|x| x.0.to_vec()),
+            logs: value.logs,
+            status: value.status.map(|x| x.as_u64()),
+        }
+    }
 }
 
 // fn add_signature_to_pdf(bytes: &[u8], signature: ECDSASignature) -> Vec<u8> {

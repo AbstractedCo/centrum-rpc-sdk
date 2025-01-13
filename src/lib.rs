@@ -58,7 +58,7 @@ use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
 pub mod centrum_config;
 pub use centrum_config::*;
 pub mod signature_utils;
-use signature_utils::{eth_sign_transaction, PublicKey};
+use signature_utils::{eth_sign_transaction, EthRecipt, PublicKey};
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -378,10 +378,6 @@ pub struct Demo {
     pub signer_mpc_public_key: PublicKey,
 }
 
-#[wasm_bindgen(getter_with_clone)]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EthRecipt(TransactionReceipt);
-
 #[wasm_bindgen]
 impl Demo {
     #[wasm_bindgen(constructor)]
@@ -546,7 +542,7 @@ impl Demo {
         )
         .map_err(|_| JsError::new("Failed to sign transaction"))?;
 
-        Ok(EthRecipt(
+        Ok(EthRecipt::from(
             eth_sepolia_sign_and_send_transaction(
                 self.eth_client.clone(),
                 eth_payload,
