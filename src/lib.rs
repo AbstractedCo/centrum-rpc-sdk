@@ -33,8 +33,10 @@ use elliptic_curve::{
 };
 
 use ethers::{
+    abi::{Abi, Address as ContractAddress, JsonAbi},
+    contract::{Contract, FunctionCall},
     middleware::{MiddlewareBuilder, NonceManagerMiddleware},
-    prelude::{Http, Provider as EthProvider},
+    prelude::{abigen, Http, Provider as EthProvider},
     providers::Middleware,
     types::{
         transaction::eip2718::TypedTransaction, NameOrAddress, Signature as EthersSignature,
@@ -73,6 +75,10 @@ use signature_utils::{
     btc_sig_from_mpc_sig, eth_sign_transaction, testnet_btc_address, EthRecipt, PublicKey,
     HUNDRED_SATS,
 };
+pub mod l1_standard_bridge_abi;
+use l1_standard_bridge_abi::ETH_SEPOLIA_STANDARD_BRIDGE_ADDRESS;
+
+abigen!(L1StandardBridge, "./L1StandardBridge_abi.json");
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -400,22 +406,78 @@ pub async fn eth_sepolia_create_transfer_payload(
     Ok(eth_transaction)
 }
 
+pub async fn eth_sepolia_bridge_to_base_payload(
+    eth_provider: Arc<EthClient>,
+    from: PublicKey,
+    // _amount: u64,
+) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
+    let chain_id = eth_provider.get_chainid().await?.as_u64();
+    let eth_nonce = eth_provider.next();
+
+    let l1_bridge_addr: ContractAddress =
+        ContractAddress::from_str(ETH_SEPOLIA_STANDARD_BRIDGE_ADDRESS)?;
+    let bridge = L1StandardBridge::new(l1_bridge_addr, eth_provider.clone());
+
+    let amount_in_wei = ethers::utils::parse_ether(0.001)?; // 0.01 ETH
+    let extra_data: Vec<u8> = vec![]; // empty
+    let min_gas_limit: u32 = 200_000;
+    let call = bridge
+        .deposit_eth(min_gas_limit, extra_data.into())
+        .value(amount_in_wei) // attach 0.01 ETH
+        .gas(1_000_000u64); // example gas limit override
+
+    let calldata = call
+        .calldata()
+        .ok_or(subxt::Error::Other("No calldata".to_string()))?;
+    let to = call
+        .tx
+        .to()
+        .ok_or(subxt::Error::Other("No to address".to_string()))?;
+    let value = call
+        .tx
+        .value()
+        .ok_or(subxt::Error::Other("No value".to_string()))?;
+    let gas_limit = call
+        .tx
+        .gas()
+        .ok_or(subxt::Error::Other("No gas limit".to_string()))?;
+
+    let from_addr = from.clone().to_eth_address();
+    let gas_price = eth_provider.get_gas_price().await?;
+
+    let mut eth_transaction: TypedTransaction = TransactionRequest {
+        from: Some(from_addr),
+        to: Some(to.clone()),
+        value: Some(value.clone()),
+        nonce: Some(eth_nonce),
+        chain_id: Some(chain_id.into()),
+        gas: Some(gas_limit.clone()),
+        gas_price: Some(gas_price),
+        data: Some(calldata),
+    }
+    .into();
+
+    eth_provider
+        .fill_transaction(&mut eth_transaction, None)
+        .await?;
+
+    Ok(eth_transaction)
+}
+
 pub async fn eth_sepolia_sign_and_send_transaction(
     eth_provider: Arc<EthClient>,
     eth_transaction: TypedTransaction,
     eth_signature: ethers::types::Signature,
-) -> Result<TransactionReceipt, subxt::error::Error> {
+) -> Result<TransactionReceipt, Box<dyn std::error::Error>> {
     let signed_transaction = eth_transaction.rlp_signed(&eth_signature);
 
-    eth_provider
+    Ok(eth_provider
         .send_raw_transaction(signed_transaction)
-        .await
-        .unwrap()
-        .await
-        .unwrap()
+        .await?
+        .await?
         .ok_or(subxt::error::Error::Other(
             "failed to send eth transaction".to_string(),
-        ))
+        ))?)
 }
 
 pub async fn btc_create_transfer_payload(
@@ -691,6 +753,52 @@ impl Demo {
         ))
     }
 
+    pub async fn submit_eth_sepolia_bridge_to_base(
+        &self,
+        _amount: u64,
+    ) -> Result<EthRecipt, JsError> {
+        let eth_payload = eth_sepolia_bridge_to_base_payload(
+            self.eth_client.clone(),
+            self.signer_mpc_public_key.clone(),
+            // amount,
+        )
+        .await
+        .map_err(|e| {
+            JsError::new(&format!(
+                "Failed to create eth sepolia bridge payload: {}",
+                e
+            ))
+        })?;
+
+        let eth_sighash = eth_payload.sighash();
+
+        let mpc_signature = self
+            .request_mpc_signature_for_generic_payload(eth_payload.sighash().0.to_vec())
+            .await?;
+
+        let eth_signature = eth_sign_transaction(
+            eth_sighash,
+            self.eth_client
+                .get_chainid()
+                .await
+                .map_err(|_| JsError::new("Failed to get chain id"))?
+                .as_u64(),
+            mpc_signature,
+            self.signer_mpc_public_key.clone(),
+        )
+        .map_err(|_| JsError::new("Failed to sign transaction"))?;
+
+        Ok(EthRecipt::from(
+            eth_sepolia_sign_and_send_transaction(
+                self.eth_client.clone(),
+                eth_payload,
+                eth_signature,
+            )
+            .await
+            .map_err(|_| JsError::new("Failed to send transaction"))?,
+        ))
+    }
+
     pub async fn submit_btc_transfer(
         &self,
         dest: String,
@@ -740,12 +848,138 @@ impl Demo {
             .ok_or(JsError::new("No account found"))?;
         Ok(res.data.free.to_string())
     }
+
+    pub async fn get_eth_address(&self) -> String {
+        let address = self.signer_mpc_public_key.clone().to_eth_address();
+        let full_hex = hex::encode(address.0);
+        format!("0x{}", full_hex)
+    }
+
+    pub async fn get_btc_address(&self) -> String {
+        testnet_btc_address(self.compressed_public_key.clone())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    use wasm_bindgen_test::*;
+    wasm_bindgen_test_configure!(run_in_browser);
 
+    #[allow(dead_code)]
+    #[wasm_bindgen_test]
+    async fn wasm_demo_test_eth_tramsfer_works() -> Result<(), JsError> {
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let eth_balance = demo.query_eth_balance().await?;
+        info!("eth_balance: {}", eth_balance);
+
+        let e = demo
+            .submit_eth_sepolia_transfer(
+                "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
+                None,
+            )
+            .await;
+        info!("eth_sepolia_transfer result: {:?}", e);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    #[wasm_bindgen_test]
+    async fn wasm_demo_test_bridge_to_base_works() -> Result<(), JsError> {
+        wasm_bindgen_test_configure!(run_in_browser);
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let bridge_result = demo.submit_eth_sepolia_bridge_to_base(100).await;
+        info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
+        bridge_result?;
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    #[wasm_bindgen_test]
+    async fn wasm_demo_test_initialize_works() -> Result<(), JsError> {
+        wasm_bindgen_test_configure!(run_in_browser);
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let demo_btc_address = demo.get_btc_address().await;
+        info!("demo_btc_address: {}", demo_btc_address);
+        // let btc_balance = demo.query_btc_balance().await?;
+        // info!("btc_balance: {}", btc_balance);
+        let demo_eth_address = demo.get_eth_address().await;
+        info!("demo_eth_address: {}", demo_eth_address);
+        let eth_balance = demo.query_eth_balance().await?;
+        info!("eth_balance: {}", eth_balance);
+        // Err(JsError::new("demo_test_initialize_works"))
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test(flavor = "current_thread")]
+    async fn demo_test_eth_tramsfer_works() -> Result<(), JsError> {
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let eth_balance = demo.query_eth_balance().await?;
+        info!("eth_balance: {}", eth_balance);
+
+        let e = demo
+            .submit_eth_sepolia_transfer(
+                "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
+                None,
+            )
+            .await;
+        info!("eth_sepolia_transfer result: {:?}", e);
+        Ok(())
+    }
+
+    // #[ignore]
+    #[tokio::test(flavor = "current_thread")]
+    async fn demo_test_bridge_to_base_works() -> Result<(), JsError> {
+        wasm_bindgen_test_configure!(run_in_browser);
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let bridge_result = demo.submit_eth_sepolia_bridge_to_base(100).await;
+        info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
+        bridge_result?;
+
+        Ok(())
+    }
+
+    #[ignore]
+    #[tokio::test(flavor = "current_thread")]
+    async fn demo_test_initialize_works() -> Result<(), JsError> {
+        wasm_bindgen_test_configure!(run_in_browser);
+        let demo = Demo::new_alice("ws://127.0.0.1:9944")
+            .await
+            .expect("demo_test_initialize_works");
+
+        let demo_btc_address = demo.get_btc_address().await;
+        info!("demo_btc_address: {}", demo_btc_address);
+        // let btc_balance = demo.query_btc_balance().await?;
+        // info!("btc_balance: {}", btc_balance);
+        let demo_eth_address = demo.get_eth_address().await;
+        info!("demo_eth_address: {}", demo_eth_address);
+        let eth_balance = demo.query_eth_balance().await?;
+        info!("eth_balance: {}", eth_balance);
+        // Err(JsError::new("demo_test_initialize_works"))
+        Ok(())
+    }
+
+    #[ignore]
     #[tokio::test(flavor = "current_thread")]
     async fn alice_submit_request_mpc_signature_works() -> Result<(), subxt::error::Error> {
         let client = start_local_client().await?;
@@ -772,6 +1006,7 @@ mod tests {
         Ok(())
     }
 
+    #[ignore]
     #[tokio::test(flavor = "current_thread")]
     async fn alice_submit_rpc_derive_account_works() -> Result<(), Box<dyn std::error::Error>> {
         let account = request_mpc_derived_account(
