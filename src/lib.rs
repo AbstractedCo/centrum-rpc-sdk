@@ -18,7 +18,10 @@ use std::collections::HashMap;
 #[cfg(not(test))]
 use log::{info, warn}; // Use log crate when building application
 
-#[cfg(test)]
+#[cfg(all(test, feature = "console_log_dep"))]
+use log::{info, warn}; // Use log crate when building application
+
+#[cfg(all(test, not(feature = "console_log_dep")))]
 use std::{println as info, println as warn}; // Workaround to use prinltn! for logs
 
 use bitcoin::{
@@ -75,10 +78,105 @@ use signature_utils::{
     btc_sig_from_mpc_sig, eth_sign_transaction, testnet_btc_address, EthRecipt, PublicKey,
     HUNDRED_SATS,
 };
-pub mod l1_standard_bridge_abi;
-use l1_standard_bridge_abi::ETH_SEPOLIA_STANDARD_BRIDGE_ADDRESS;
+pub mod contract_utils;
+use contract_utils::{
+    ETH_MAINNET_UNISWAP_V2_ROUTER, ETH_SEPOLIA_BASE_STANDARD_BRIDGE_ADDRESS,
+    ETH_SEPOLIA_UNISWAP_V2_ROUTER, PHA_MAINNET, UNI_SEPOLIA, WETH_MAINNET, WETH_SEPOLIA,
+};
 
-abigen!(L1StandardBridge, "./L1StandardBridge_abi.json");
+#[allow(dead_code)]
+#[cfg(test)]
+mod tests;
+#[allow(dead_code)]
+#[cfg(test)]
+mod wasm_tests;
+
+abigen!(
+    L1StandardBridge,
+    r#"[
+    {
+        "inputs": [
+            {
+                "internalType": "uint32",
+                "name": "_minGasLimit",
+                "type": "uint32"
+            },
+            {
+                "internalType": "bytes",
+                "name": "_extraData",
+                "type": "bytes"
+            }
+        ],
+        "name": "depositETH",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    }
+]"#
+);
+
+abigen!(
+    UniswapV2Router02,
+    r#"[
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "amountOutMin",
+                "type": "uint256"
+            },
+            {
+                "internalType": "address[]",
+                "name": "path",
+                "type": "address[]"
+            },
+            {
+                "internalType": "address",
+                "name": "to",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "deadline",
+                "type": "uint256"
+            }
+        ],
+        "name": "swapExactETHForTokens",
+        "outputs": [
+            {
+                "internalType": "uint256[]",
+                "name": "amounts",
+                "type": "uint256[]"
+            }
+        ],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+        {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "amountIn",
+                "type": "uint256"
+            },
+            {
+                "internalType": "address[]",
+                "name": "path",
+                "type": "address[]"
+            }
+        ],
+        "name": "getAmountsOut",
+        "outputs": [
+            {
+                "internalType": "uint256[]",
+                "name": "amounts",
+                "type": "uint256[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }]"#
+);
 
 const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
     0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
@@ -130,34 +228,6 @@ extern "C" {
 
     #[wasm_bindgen]
     async fn fillTxAndSubmit(unsignedTx: JsValue, signature: String, pubkey: String) -> JsValue;
-}
-
-#[wasm_bindgen(module = "https://esm.sh/@polkadot/extension-dapp@latest")]
-extern "C" {
-    #[wasm_bindgen]
-    async fn web3Enable(dappName: String) -> JsValue;
-
-    #[wasm_bindgen]
-    async fn web3Accounts() -> JsValue;
-
-    #[wasm_bindgen]
-    async fn web3FromAddress(address: String) -> JsValue;
-}
-
-#[wasm_bindgen(module = "https://esm.sh/web3@latest")]
-extern "C" {
-    type Web3;
-
-    #[wasm_bindgen(constructor)]
-    fn new(endpoint: String) -> Web3;
-
-    type Web3EthInterface;
-
-    #[wasm_bindgen(method, getter)]
-    fn eth(this: &Web3) -> Web3EthInterface;
-
-    #[wasm_bindgen(method)]
-    async fn getBalance(this: &Web3EthInterface, address: String) -> JsValue;
 }
 
 async fn start_rpc_client_from_url(url: &str) -> Result<RpcClient, subxt::error::Error> {
@@ -256,12 +326,12 @@ pub async fn submit_mpc_signature_request(
 
     let mut current_header = rpc.chain_get_header(None).await?.unwrap().number;
 
-    info!("submit native transaction result: {:?}", result);
+    info!("Submitted mpc signature request");
 
     info!("waiting for transaction to be included...");
 
     let res = result.wait_for_finalized_success().await?;
-    info!("transaction finalized: {:?}", res);
+    info!("signature request submitted");
 
     let sig_request = res
         .find_first::<runtime::mpc_manager::events::SignatureRequested>()?
@@ -295,7 +365,7 @@ pub async fn submit_mpc_signature_request(
             .collect();
         for e in _ev {
             if e.epsilon == _epsilon {
-                info!("found signature event: {:?}", e);
+                info!("Signature delivered");
                 // info!("Epsilon: {:?} \n big_r: {:?} \n payload: {:?} \n payload: {:?} \n delivered_by: {:?}", e.epsilon, e.s, e.big_r, e.payload, e.delivered_by);
             }
             return Ok(e);
@@ -397,8 +467,6 @@ pub async fn eth_sepolia_create_transfer_payload(
     }
     .into();
 
-    // eth_transaction.chain_id()
-
     eth_provider
         .fill_transaction(&mut eth_transaction, None)
         .await
@@ -409,22 +477,121 @@ pub async fn eth_sepolia_create_transfer_payload(
 pub async fn eth_sepolia_bridge_to_base_payload(
     eth_provider: Arc<EthClient>,
     from: PublicKey,
-    // _amount: u64,
+    _amount: Option<u128>,
 ) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
     let chain_id = eth_provider.get_chainid().await?.as_u64();
     let eth_nonce = eth_provider.next();
 
     let l1_bridge_addr: ContractAddress =
-        ContractAddress::from_str(ETH_SEPOLIA_STANDARD_BRIDGE_ADDRESS)?;
+        ContractAddress::from_str(ETH_SEPOLIA_BASE_STANDARD_BRIDGE_ADDRESS)?;
     let bridge = L1StandardBridge::new(l1_bridge_addr, eth_provider.clone());
 
-    let amount_in_wei = ethers::utils::parse_ether(0.001)?; // 0.01 ETH
+    let amount = _amount.unwrap_or(1_000_000_000_000_000u128);
+
     let extra_data: Vec<u8> = vec![]; // empty
     let min_gas_limit: u32 = 200_000;
     let call = bridge
         .deposit_eth(min_gas_limit, extra_data.into())
-        .value(amount_in_wei) // attach 0.01 ETH
+        .value(amount) // attach 0.01 ETH
         .gas(1_000_000u64); // example gas limit override
+
+    let calldata = call
+        .calldata()
+        .ok_or(subxt::Error::Other("No calldata".to_string()))?;
+    let to = call
+        .tx
+        .to()
+        .ok_or(subxt::Error::Other("No to address".to_string()))?;
+    let value = call
+        .tx
+        .value()
+        .ok_or(subxt::Error::Other("No value".to_string()))?;
+    let gas_limit = call
+        .tx
+        .gas()
+        .ok_or(subxt::Error::Other("No gas limit".to_string()))?;
+
+    let from_addr = from.clone().to_eth_address();
+    let gas_price = eth_provider.get_gas_price().await?;
+
+    let mut eth_transaction: TypedTransaction = TransactionRequest {
+        from: Some(from_addr),
+        to: Some(to.clone()),
+        value: Some(value.clone()),
+        nonce: Some(eth_nonce),
+        chain_id: Some(chain_id.into()),
+        gas: Some(gas_limit.clone()),
+        gas_price: Some(gas_price),
+        data: Some(calldata),
+    }
+    .into();
+
+    eth_provider
+        .fill_transaction(&mut eth_transaction, None)
+        .await?;
+
+    Ok(eth_transaction)
+}
+
+pub async fn eth_get_uniswap_amounts_out(
+    router: &UniswapV2Router02<EthClient>,
+    amount: U256,
+    path: Vec<ContractAddress>,
+) -> Result<Vec<U256>, Box<dyn std::error::Error>> {
+    let call = router.get_amounts_out(amount, path).call().await?; // read-only call
+
+    Ok(call)
+}
+
+pub async fn eth_uniswap_eth_for_token_payload(
+    eth_provider: Arc<EthClient>,
+    from: PublicKey,
+    _amount: Option<u128>,
+    slippage_in_percent: u64,
+    token_address: ContractAddress,
+    testnet: bool,
+) -> Result<TypedTransaction, Box<dyn std::error::Error>> {
+    let chain_id = eth_provider.get_chainid().await?.as_u64();
+    let eth_nonce = eth_provider.next();
+
+    let amount = U256::from(_amount.unwrap_or(1_000_000_000_000_000u128));
+
+    let router_address: ContractAddress = if testnet {
+        ContractAddress::from_str(ETH_SEPOLIA_UNISWAP_V2_ROUTER)?
+    } else {
+        ContractAddress::from_str(ETH_MAINNET_UNISWAP_V2_ROUTER)?
+    };
+    let router = UniswapV2Router02::new(router_address, eth_provider.clone());
+
+    let weth = if testnet {
+        ContractAddress::from_str(WETH_SEPOLIA)?
+    } else {
+        ContractAddress::from_str(WETH_MAINNET)?
+    };
+
+    let path = vec![weth, token_address];
+
+    let estimated_out = eth_get_uniswap_amounts_out(&router, amount, path.clone()).await?;
+    let deadline = U256::from(chrono::Utc::now().timestamp() + 60); // 60 secs from now
+
+    let estimated_out = estimated_out.last().unwrap();
+
+    // 100% == 10_000 BIPS.
+    let one_hundred_percent = U256::from(10_000u64);
+
+    let slippage_bps = U256::from(slippage_in_percent * 100u64);
+
+    let min_out = (estimated_out * (one_hundred_percent - slippage_bps)) / one_hundred_percent;
+
+    info!(
+        "Swapping {:?} ETH for {:?}, Slippage: {}%",
+        amount, min_out, slippage_in_percent
+    );
+
+    let call = router
+        .swap_exact_eth_for_tokens(min_out, path, from.clone().to_eth_address(), deadline)
+        .value(amount)
+        .gas(1_000_000u64);
 
     let calldata = call
         .calldata()
@@ -564,9 +731,22 @@ pub struct Demo {
 
 #[wasm_bindgen]
 impl Demo {
-    #[wasm_bindgen(constructor)]
-    pub async fn new_alice(centrum_node_url: &str) -> Result<Demo, JsError> {
-        let signer = csigner();
+    async fn create_clients(
+        signer: CentrumMultiSigner,
+        centrum_node_url: &str,
+        eth_testnet: bool,
+    ) -> Result<
+        (
+            CentrumRpcClient,
+            CentrumClient,
+            EthClient,
+            PublicKey,
+            CompressedPublicKey,
+        ),
+        JsError,
+    > {
+        #[cfg(all(debug_assertions, feature = "console_log_dep"))]
+        console_log::init_with_level(log::Level::Debug)?;
         let client = start_client_from_url(centrum_node_url).await?;
         let rpc = start_raw_rpc_client_from_url(centrum_node_url).await?;
 
@@ -575,7 +755,8 @@ impl Demo {
             CentrumAccountId::PublicKey(signer.0.public_key().0.into()),
         )
         .await
-        .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
+        .map_err(|_| JsError::new("failed to derive MPC public key"))?;
+
         let encoded_point_compressed = signer_mpc_public_key
             .clone()
             .into_affine()
@@ -584,11 +765,34 @@ impl Demo {
         let compressed_public_key =
             CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
 
-        let eth_client =
+        let eth_client = if eth_testnet {
             EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
                 .unwrap()
-                .nonce_manager(signer_mpc_public_key.clone().to_eth_address());
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
+        } else {
+            EthProvider::<Http>::try_from("https://ethereum-rpc.publicnode.com")
+                .unwrap()
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
+        };
         eth_client.initialize_nonce(None).await?;
+        Ok((
+            rpc,
+            client,
+            eth_client,
+            signer_mpc_public_key,
+            compressed_public_key,
+        ))
+    }
+
+    #[wasm_bindgen(constructor)]
+    pub async fn new_alice(centrum_node_url: &str, eth_testnet: bool) -> Result<Demo, JsError> {
+        #[cfg(all(debug_assertions, feature = "console_log_dep"))]
+        console_log::init_with_level(log::Level::Debug)?;
+
+        let signer = csigner();
+        let (rpc, client, eth_client, signer_mpc_public_key, compressed_public_key) =
+            Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+
         Ok(Demo {
             client,
             rpc,
@@ -602,7 +806,10 @@ impl Demo {
     pub async fn new_from_phrase(
         centrum_node_url: &str,
         seed_phrase: &str,
+        eth_testnet: bool,
     ) -> Result<Demo, JsError> {
+        #[cfg(all(debug_assertions, feature = "console_log_dep"))]
+        console_log::init_with_level(log::Level::Debug)?;
         let uri = SecretUri::from_str(seed_phrase)
             .map_err(|_| subxt::error::Error::Other("failed to parse seed phrase".to_string()))?;
         let signer: CentrumMultiSigner = subxt_signer::sr25519::Keypair::from_uri(&uri)
@@ -611,28 +818,8 @@ impl Demo {
             })?
             .into();
 
-        let client = start_client_from_url(centrum_node_url).await?;
-        let rpc = start_raw_rpc_client_from_url(centrum_node_url).await?;
-
-        let signer_mpc_public_key = request_mpc_derived_account(
-            &client,
-            CentrumAccountId::PublicKey(signer.0.public_key().0.into()),
-        )
-        .await
-        .map_err(|_| subxt::error::Error::Other("failed to derive MPC public key".to_string()))?;
-        let encoded_point_compressed = signer_mpc_public_key
-            .clone()
-            .into_affine()
-            .to_encoded_point(true);
-
-        let compressed_public_key =
-            CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
-
-        let eth_client =
-            EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
-                .unwrap()
-                .nonce_manager(signer_mpc_public_key.clone().to_eth_address());
-        eth_client.initialize_nonce(None).await?;
+        let (rpc, client, eth_client, signer_mpc_public_key, compressed_public_key) =
+            Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
         Ok(Demo {
             client,
@@ -641,39 +828,6 @@ impl Demo {
             signer: signer.clone(),
             signer_mpc_public_key,
             compressed_public_key,
-        })
-    }
-
-    pub async fn request_mpc_signature(
-        &self,
-        payload: Vec<u8>,
-    ) -> Result<MpcSignatureDelivered, JsError> {
-        let payload: [u8; 32] = payload.try_into().map_err(|_| {
-            subxt::error::Error::Other("failed to convert payload to [u8; 32]".to_string())
-        })?;
-        // payload.truncate(32);
-        let partial_ext = create_partial_extrinsic(
-            &self.rpc,
-            &self.client,
-            self.signer.account_id(),
-            request_mpc_signature_payload(payload).await,
-        )
-        .await?;
-
-        let submittable = apply_native_signature_to_transaction(
-            &partial_ext,
-            self.signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, &self.signer).await,
-        )
-        .await;
-
-        let delivered = submit_mpc_signature_request(&self.client, &self.rpc, submittable).await?;
-
-        Ok(MpcSignatureDelivered {
-            payload: payload.to_vec(),
-            epsilon: delivered.epsilon.to_vec(),
-            big_r: delivered.big_r.to_vec(),
-            s: delivered.s.to_vec(),
         })
     }
 
@@ -708,6 +862,43 @@ impl Demo {
         })
     }
 
+    async fn sign_and_submit_eth_transaction(
+        &self,
+        eth_payload: TypedTransaction,
+    ) -> Result<EthRecipt, JsError> {
+        let eth_sighash = eth_payload.sighash();
+
+        let mpc_signature = self
+            .request_mpc_signature_for_generic_payload(eth_payload.sighash().0.to_vec())
+            .await?;
+
+        let eth_signature = eth_sign_transaction(
+            eth_sighash,
+            self.eth_client
+                .get_chainid()
+                .await
+                .map_err(|_| JsError::new("Failed to get chain id"))?
+                .as_u64(),
+            mpc_signature,
+            self.signer_mpc_public_key.clone(),
+        )
+        .map_err(|_| JsError::new("Failed to sign transaction"))?;
+
+        let recipt = EthRecipt::from(
+            eth_sepolia_sign_and_send_transaction(
+                self.eth_client.clone(),
+                eth_payload,
+                eth_signature,
+            )
+            .await
+            .map_err(|_| JsError::new("Failed to send transaction"))?,
+        );
+
+        info!("Submitted eth transaction",);
+
+        Ok(recipt)
+    }
+
     pub async fn submit_eth_sepolia_transfer(
         &self,
         dest: String,
@@ -724,43 +915,17 @@ impl Demo {
         .await
         .map_err(|_| JsError::new("Failed to create transfer payload"))?;
 
-        let eth_sighash = eth_payload.sighash();
-
-        let mpc_signature = self
-            .request_mpc_signature_for_generic_payload(eth_payload.sighash().0.to_vec())
-            .await?;
-
-        let eth_signature = eth_sign_transaction(
-            eth_sighash,
-            self.eth_client
-                .get_chainid()
-                .await
-                .map_err(|_| JsError::new("Failed to get chain id"))?
-                .as_u64(),
-            mpc_signature,
-            self.signer_mpc_public_key.clone(),
-        )
-        .map_err(|_| JsError::new("Failed to sign transaction"))?;
-
-        Ok(EthRecipt::from(
-            eth_sepolia_sign_and_send_transaction(
-                self.eth_client.clone(),
-                eth_payload,
-                eth_signature,
-            )
-            .await
-            .map_err(|_| JsError::new("Failed to send transaction"))?,
-        ))
+        self.sign_and_submit_eth_transaction(eth_payload).await
     }
 
     pub async fn submit_eth_sepolia_bridge_to_base(
         &self,
-        _amount: u64,
+        _amount: Option<u128>,
     ) -> Result<EthRecipt, JsError> {
         let eth_payload = eth_sepolia_bridge_to_base_payload(
             self.eth_client.clone(),
             self.signer_mpc_public_key.clone(),
-            // amount,
+            _amount,
         )
         .await
         .map_err(|e| {
@@ -770,33 +935,59 @@ impl Demo {
             ))
         })?;
 
-        let eth_sighash = eth_payload.sighash();
+        self.sign_and_submit_eth_transaction(eth_payload).await
+    }
 
-        let mpc_signature = self
-            .request_mpc_signature_for_generic_payload(eth_payload.sighash().0.to_vec())
-            .await?;
-
-        let eth_signature = eth_sign_transaction(
-            eth_sighash,
-            self.eth_client
-                .get_chainid()
-                .await
-                .map_err(|_| JsError::new("Failed to get chain id"))?
-                .as_u64(),
-            mpc_signature,
+    pub async fn submit_eth_sepolia_swap_weth_for_uni(
+        &self,
+        _amount: Option<u128>,
+    ) -> Result<EthRecipt, JsError> {
+        let eth_payload = eth_uniswap_eth_for_token_payload(
+            self.eth_client.clone(),
             self.signer_mpc_public_key.clone(),
+            _amount,
+            1,
+            ContractAddress::from_str(UNI_SEPOLIA)?,
+            true,
         )
-        .map_err(|_| JsError::new("Failed to sign transaction"))?;
+        .await
+        .map_err(|e| {
+            JsError::new(&format!(
+                "Failed to create eth sepolia bridge payload: {}",
+                e
+            ))
+        })?;
 
-        Ok(EthRecipt::from(
-            eth_sepolia_sign_and_send_transaction(
-                self.eth_client.clone(),
-                eth_payload,
-                eth_signature,
-            )
-            .await
-            .map_err(|_| JsError::new("Failed to send transaction"))?,
-        ))
+        info!("swap payload created");
+
+        let recipt = self.sign_and_submit_eth_transaction(eth_payload).await?;
+
+        info!("Swapped eth for token UNI",);
+
+        Ok(recipt)
+    }
+
+    pub async fn submit_eth_mainnet_swap_eth_for_pha(
+        &self,
+        amount: Option<u128>,
+    ) -> Result<EthRecipt, JsError> {
+        let eth_payload = eth_uniswap_eth_for_token_payload(
+            self.eth_client.clone(),
+            self.signer_mpc_public_key.clone(),
+            amount,
+            1,
+            ContractAddress::from_str(PHA_MAINNET)?,
+            false,
+        )
+        .await
+        .map_err(|e| {
+            JsError::new(&format!(
+                "Failed to create eth sepolia bridge payload: {}",
+                e
+            ))
+        })?;
+
+        self.sign_and_submit_eth_transaction(eth_payload).await
     }
 
     pub async fn submit_btc_transfer(
@@ -844,9 +1035,20 @@ impl Demo {
             .at_latest()
             .await?
             .fetch(&account_sys)
-            .await?
-            .ok_or(JsError::new("No account found"))?;
+            .await?;
+
+        if res.is_none() {
+            return Ok("0".to_string());
+        }
+
+        let res = res.unwrap();
+
         Ok(res.data.free.to_string())
+    }
+
+    pub async fn get_native_address(&self) -> String {
+        let account = self.signer.account_id();
+        account.to_string()
     }
 
     pub async fn get_eth_address(&self) -> String {
@@ -859,238 +1061,3 @@ impl Demo {
         testnet_btc_address(self.compressed_public_key.clone())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use wasm_bindgen_test::*;
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    #[allow(dead_code)]
-    #[wasm_bindgen_test]
-    async fn wasm_demo_test_eth_tramsfer_works() -> Result<(), JsError> {
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let eth_balance = demo.query_eth_balance().await?;
-        info!("eth_balance: {}", eth_balance);
-
-        let e = demo
-            .submit_eth_sepolia_transfer(
-                "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
-                None,
-            )
-            .await;
-        info!("eth_sepolia_transfer result: {:?}", e);
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    #[wasm_bindgen_test]
-    async fn wasm_demo_test_bridge_to_base_works() -> Result<(), JsError> {
-        wasm_bindgen_test_configure!(run_in_browser);
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let bridge_result = demo.submit_eth_sepolia_bridge_to_base(100).await;
-        info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
-        bridge_result?;
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    #[wasm_bindgen_test]
-    async fn wasm_demo_test_initialize_works() -> Result<(), JsError> {
-        wasm_bindgen_test_configure!(run_in_browser);
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let demo_btc_address = demo.get_btc_address().await;
-        info!("demo_btc_address: {}", demo_btc_address);
-        // let btc_balance = demo.query_btc_balance().await?;
-        // info!("btc_balance: {}", btc_balance);
-        let demo_eth_address = demo.get_eth_address().await;
-        info!("demo_eth_address: {}", demo_eth_address);
-        let eth_balance = demo.query_eth_balance().await?;
-        info!("eth_balance: {}", eth_balance);
-        // Err(JsError::new("demo_test_initialize_works"))
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn demo_test_eth_tramsfer_works() -> Result<(), JsError> {
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let eth_balance = demo.query_eth_balance().await?;
-        info!("eth_balance: {}", eth_balance);
-
-        let e = demo
-            .submit_eth_sepolia_transfer(
-                "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
-                None,
-            )
-            .await;
-        info!("eth_sepolia_transfer result: {:?}", e);
-        Ok(())
-    }
-
-    // #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn demo_test_bridge_to_base_works() -> Result<(), JsError> {
-        wasm_bindgen_test_configure!(run_in_browser);
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let bridge_result = demo.submit_eth_sepolia_bridge_to_base(100).await;
-        info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
-        bridge_result?;
-
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn demo_test_initialize_works() -> Result<(), JsError> {
-        wasm_bindgen_test_configure!(run_in_browser);
-        let demo = Demo::new_alice("ws://127.0.0.1:9944")
-            .await
-            .expect("demo_test_initialize_works");
-
-        let demo_btc_address = demo.get_btc_address().await;
-        info!("demo_btc_address: {}", demo_btc_address);
-        // let btc_balance = demo.query_btc_balance().await?;
-        // info!("btc_balance: {}", btc_balance);
-        let demo_eth_address = demo.get_eth_address().await;
-        info!("demo_eth_address: {}", demo_eth_address);
-        let eth_balance = demo.query_eth_balance().await?;
-        info!("eth_balance: {}", eth_balance);
-        // Err(JsError::new("demo_test_initialize_works"))
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn alice_submit_request_mpc_signature_works() -> Result<(), subxt::error::Error> {
-        let client = start_local_client().await?;
-        let rpc = start_raw_local_rpc_client().await?;
-
-        let alice_signer = csigner();
-
-        let partial_ext = create_partial_extrinsic(
-            &rpc,
-            &client,
-            alice_signer.account_id(),
-            request_mpc_signature_payload([0; 32]).await,
-        )
-        .await?;
-
-        let submittable = apply_native_signature_to_transaction(
-            &partial_ext,
-            alice_signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, &alice_signer).await,
-        )
-        .await;
-
-        submit_mpc_signature_request(&client, &rpc, submittable).await?;
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn alice_submit_rpc_derive_account_works() -> Result<(), Box<dyn std::error::Error>> {
-        let account = request_mpc_derived_account(
-            &start_local_client().await?,
-            CentrumMultiAccount::from(subxt_signer::sr25519::dev::alice().public_key().0).0,
-        )
-        .await;
-
-        info!("Alice Account: {:?}", account);
-
-        Ok(())
-    }
-
-    #[ignore]
-    #[tokio::test(flavor = "current_thread")]
-    async fn alice_submit_remark_works() -> Result<(), subxt::error::Error> {
-        let client = start_local_client().await?;
-        let rpc = start_raw_local_rpc_client().await?;
-
-        let alice_signer = csigner();
-
-        let partial_ext = create_partial_extrinsic(
-            &rpc,
-            &client,
-            alice_signer.account_id(),
-            create_rmrk_payload().await?,
-        )
-        .await?;
-
-        let submittable = apply_native_signature_to_transaction(
-            &partial_ext,
-            alice_signer.account_id(),
-            demo_sign_native_with_signer(&partial_ext, &alice_signer).await,
-        )
-        .await;
-
-        submit_native_transaction(submittable).await
-    }
-}
-
-// let api = start_local_client().await?;
-
-// let _metadata: Vec<u8> = fs::read(METADATA_PATH)?;
-// let runtime_metadata = RuntimeMetadataPrefixed::decode(&mut &_metadata[..]).map(|x| x.1)?;
-
-// println!("Runtime metadata: {:?}", runtime_metadata);
-
-// let alice_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::alice().into();
-// let bob_pair: centrum_config::CentrumMultiSigner = subxt_signer::sr25519::dev::bob().into();
-
-// let alice_account: Static<centrum_primitives::Account> =
-//     Static(alice_pair.clone().account_id());
-
-// let bob_account: Static<centrum_primitives::Account> = Static(bob_pair.clone().account_id());
-
-// let old_alice: centrum_primitives::Account = alice_pair.clone().account_id();
-
-// let rmrk = api
-//     .tx()
-//     .sign_and_submit_then_watch_default(
-//         &runtime::tx().system().remark(vec![0u8; 32]),
-//         &alice_pair,
-//     )
-//     .await?
-//     .wait_for_finalized_success()
-//     .await?;
-
-// println!("remark tx: {:?}", rmrk);
-
-// let alice_account_sys = runtime::storage().system().account(alice_account);
-
-// let result = api.storage().at_latest().await?.fetch(&query).await?;
-
-// let value = result.unwrap();
-
-// let _a = runtime::storage().system().account(&alice_account);
-// let _b = runtime::storage().system().account(&bob_account);
-
-// println!(
-//     "Alice account data: {:?}",
-//     api.storage().at_latest().await?.fetch(&_a).await?
-// );
-
-// println!(
-//     "Bob account data: {:?}",
-//     api.storage().at_latest().await?.fetch(&_b).await?
-// );

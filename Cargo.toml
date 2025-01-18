@@ -31,9 +31,11 @@ array-bytes = { version = "6.2.3", default-features = false }
 bitcoin = { version = "0.32.5" }
 # bitcoincore-rpc = { version = "0.19.0" }
 # bitcoincore-rpc-json = { version = "0.19.0" }
+chrono = { version = "0.4.39", default-features = false, features = ["wasmbind", "now"] }
 codec = { package = "parity-scale-codec", version = "3.6.12", features = [
     "derive",
 ], default-features = false }
+console_log = { version = "1", features = ["color"], optional = true }
 elliptic-curve = { version = "0.13.8", features = ["sec1"] }
 frame-metadata = { version = "17.0.0", features = [
     "current",
@@ -99,6 +101,7 @@ wasm-bindgen-test = "0.3.50"
 
 [features]
 default = ["std"]
+console_log_dep = ["console_log"]
 std = [
     "frame-metadata/std",
     "hex/std",

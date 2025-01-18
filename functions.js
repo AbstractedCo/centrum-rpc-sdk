@@ -188,7 +188,7 @@ async function createTransaction(from, to, amount) {
 async function submitTransaction(tx) {
   try {
     const url =
-      "https://api.blockcypher.com/v1/bcy/test/txs/send?token=4533e4978e304937a5d224f48cbe23a0"; // Testnet endpoint
+      "https://api.blockcypher.com/v1/bcy/test/txs/send?token=065484743ce942a89148803e195b1ae2"; // Testnet endpoint
     const requestBody = tx;
 
     const response = await fetch(url, {
