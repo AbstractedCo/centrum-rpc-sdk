@@ -3,6 +3,7 @@
 // use frame_metadata::RuntimeMetadataPrefixed;
 use codec::Encode;
 use sp_std::{str::FromStr, sync::Arc};
+use std::collections::HashMap;
 
 #[cfg(not(test))]
 use log::{info, warn}; // Use log crate when building application
@@ -19,7 +20,7 @@ use elliptic_curve::sec1::ToEncodedPoint;
 use ethers::{
     abi::Address as ContractAddress,
     middleware::{MiddlewareBuilder, NonceManagerMiddleware},
-    prelude::{Http, Provider as EthProvider},
+    prelude::{Http, Provider as EvmProvider},
     providers::Middleware,
     types::{
         transaction::eip2718::TypedTransaction, NameOrAddress, TransactionReceipt,
@@ -27,6 +28,7 @@ use ethers::{
     },
 };
 
+use rlp::Decodable;
 use subxt::{
     backend::{legacy::LegacyRpcMethods, rpc::RpcClient},
     config::ExtrinsicParams,
@@ -94,7 +96,7 @@ pub mod runtime {}
 
 pub type CentrumClient = OnlineClient<CentrumConfig>;
 pub type CentrumRpcClient = LegacyRpcMethods<CentrumConfig>;
-pub type EthClient = NonceManagerMiddleware<EthProvider<Http>>;
+pub type EvmClient = NonceManagerMiddleware<EvmProvider<Http>>;
 
 #[wasm_bindgen(module = "/functions.js")]
 extern "C" {
@@ -318,7 +320,7 @@ pub async fn request_mpc_derived_account(
 }
 
 pub async fn eth_sepolia_create_transfer_payload(
-    eth_provider: Arc<EthClient>,
+    eth_provider: Arc<EvmClient>,
     from: PublicKey,
     dest: &str,
     amount: Option<u128>,
@@ -360,7 +362,7 @@ pub async fn eth_sepolia_create_transfer_payload(
 }
 
 pub async fn eth_sepolia_bridge_to_base_payload(
-    eth_provider: Arc<EthClient>,
+    eth_provider: Arc<EvmClient>,
     from: PublicKey,
     _amount: Option<u128>,
 ) -> Result<TypedTransaction, Error> {
@@ -419,7 +421,7 @@ pub async fn eth_sepolia_bridge_to_base_payload(
 }
 
 pub async fn eth_get_uniswap_amounts_out(
-    router: &UniswapV2Router02<EthClient>,
+    router: &UniswapV2Router02<EvmClient>,
     amount: U256,
     path: Vec<ContractAddress>,
 ) -> Result<Vec<U256>, Error> {
@@ -429,7 +431,7 @@ pub async fn eth_get_uniswap_amounts_out(
 }
 
 pub async fn eth_uniswap_eth_for_token_payload(
-    eth_provider: Arc<EthClient>,
+    eth_provider: Arc<EvmClient>,
     from: PublicKey,
     _amount: Option<u128>,
     slippage_in_percent: u64,
@@ -516,8 +518,8 @@ pub async fn eth_uniswap_eth_for_token_payload(
     Ok(eth_transaction)
 }
 
-pub async fn eth_sepolia_sign_and_send_transaction(
-    eth_provider: Arc<EthClient>,
+pub async fn evm_sign_and_send_transaction(
+    eth_provider: Arc<EvmClient>,
     eth_transaction: TypedTransaction,
     eth_signature: ethers::types::Signature,
 ) -> Result<TransactionReceipt, Error> {
@@ -640,7 +642,11 @@ pub struct Demo {
     #[wasm_bindgen(skip)]
     pub rpc: CentrumRpcClient,
     #[wasm_bindgen(skip)]
-    pub eth_client: Arc<EthClient>,
+    pub eth_client: Arc<EvmClient>,
+    #[wasm_bindgen(skip)]
+    pub avax_p_client: Arc<EvmClient>,
+    #[wasm_bindgen(skip)]
+    pub custom_clients_map: HashMap<String, Arc<EvmClient>>,
     #[wasm_bindgen(skip)]
     pub signer: CentrumMultiSigner,
     #[wasm_bindgen(getter_with_clone)]
@@ -659,7 +665,8 @@ impl Demo {
         (
             CentrumRpcClient,
             CentrumClient,
-            EthClient,
+            EvmClient,
+            EvmClient,
             PublicKey,
             CompressedPublicKey,
         ),
@@ -685,19 +692,31 @@ impl Demo {
             CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
 
         let eth_client = if eth_testnet {
-            EthProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
+            EvmProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
                 .unwrap()
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         } else {
-            EthProvider::<Http>::try_from("https://ethereum-rpc.publicnode.com")
+            EvmProvider::<Http>::try_from("https://ethereum-rpc.publicnode.com")
                 .unwrap()
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         };
         eth_client.initialize_nonce(None).await?;
+
+        let avax_p_client = if eth_testnet {
+            EvmProvider::<Http>::try_from("https://avalanche-fuji-p-chain-rpc.publicnode.com")
+                .unwrap()
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
+        } else {
+            EvmProvider::<Http>::try_from("https://avalanche-p-chain-rpc.publicnode.com")
+                .unwrap()
+                .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
+        };
+
         Ok((
             rpc,
             client,
             eth_client,
+            avax_p_client,
             signer_mpc_public_key,
             compressed_public_key,
         ))
@@ -709,16 +728,18 @@ impl Demo {
         console_log::init_with_level(log::Level::Debug)?;
 
         let signer = csigner();
-        let (rpc, client, eth_client, signer_mpc_public_key, compressed_public_key) =
+        let (rpc, client, eth_client, avax_p_client, signer_mpc_public_key, compressed_public_key) =
             Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
         Ok(Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
+            avax_p_client: Arc::new(avax_p_client),
             signer: signer.clone(),
             signer_mpc_public_key,
             compressed_public_key,
+            custom_clients_map: HashMap::new(),
         })
     }
 
@@ -734,16 +755,18 @@ impl Demo {
             .map_err(|e| Error::Other(e.to_string()))?
             .into();
 
-        let (rpc, client, eth_client, signer_mpc_public_key, compressed_public_key) =
+        let (rpc, client, eth_client, avax_p_client, signer_mpc_public_key, compressed_public_key) =
             Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
         Ok(Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
+            avax_p_client: Arc::new(avax_p_client),
             signer: signer.clone(),
             signer_mpc_public_key,
             compressed_public_key,
+            custom_clients_map: HashMap::new(),
         })
     }
 
@@ -780,12 +803,8 @@ impl Demo {
         info!("Eth signature created");
 
         let recipt = EthRecipt::from(
-            eth_sepolia_sign_and_send_transaction(
-                self.eth_client.clone(),
-                eth_payload,
-                eth_signature,
-            )
-            .await?,
+            evm_sign_and_send_transaction(self.eth_client.clone(), eth_payload, eth_signature)
+                .await?,
         );
 
         info!("Submitted eth transaction",);
@@ -882,6 +901,79 @@ impl Demo {
             .await?;
 
         Ok(btc_sign_and_send_transaction(btc_payload, mpc_signature).await?)
+    }
+
+    pub async fn add_custom_client(&mut self, name: String, url: String) -> Result<(), Error> {
+        let provider = EvmProvider::<Http>::try_from(url)
+            .map_err(|e| Error::Other(e.to_string()))?
+            .nonce_manager(self.signer_mpc_public_key.clone().to_eth_address());
+        self.custom_clients_map.insert(name, Arc::new(provider));
+        Ok(())
+    }
+
+    pub async fn list_custom_clients(&self) -> Vec<String> {
+        self.custom_clients_map.keys().cloned().collect()
+    }
+
+    /// Accepts a hex encoded transaction
+    ///
+    /// how it decodes to a Typed Transaction:
+    /// uses hex::decode on the input
+    /// rlp::Rlp::new on the result
+    /// Decodes the rlp into a TypedTransaction
+    pub async fn sign_and_submit_payload_to_custom_client(
+        &self,
+        client_name: String,
+        tx_hex: String,
+    ) -> Result<EthRecipt, Error> {
+        let evm_client = self
+            .custom_clients_map
+            .get(&client_name)
+            .ok_or(Error::Other("Client not found".to_string()))?;
+
+        let typed_tx_hex = hex::decode(tx_hex)?;
+        let tx_rlp = rlp::Rlp::new(typed_tx_hex.as_slice());
+        let eth_payload = TypedTransaction::decode(&tx_rlp)?;
+
+        let eth_sighash = eth_payload.sighash();
+
+        let mpc_signature = internal_request_mpc_signature_payload(
+            eth_sighash.0.clone(),
+            &self.client,
+            &self.rpc,
+            &self.signer,
+        )
+        .await?;
+
+        let eth_signature = eth_sign_transaction(
+            eth_sighash,
+            evm_client.get_chainid().await?.as_u64(),
+            mpc_signature,
+            self.signer_mpc_public_key.clone(),
+        )?;
+
+        info!("EVM signature created");
+
+        let recipt = EthRecipt::from(
+            evm_sign_and_send_transaction(evm_client.clone(), eth_payload, eth_signature).await?,
+        );
+
+        info!("Submitted EVM transaction",);
+
+        Ok(recipt)
+    }
+
+    pub async fn query_custom_client_balance(&self, client_name: String) -> Result<String, Error> {
+        let evm_client = self
+            .custom_clients_map
+            .get(&client_name)
+            .ok_or(Error::Other("Client not found".to_string()))?;
+
+        let bal = evm_client
+            .get_balance(self.signer_mpc_public_key.clone().to_eth_address(), None)
+            .await?;
+
+        Ok(bal.to_string())
     }
 
     pub async fn query_eth_balance(&self) -> Result<String, Error> {

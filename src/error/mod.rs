@@ -43,6 +43,8 @@ pub enum Error {
     Other(String),
     #[error("serde_wasm_bindgen error: {0}")]
     SerdeWasmBindgenError(#[from] serde_wasm_bindgen::Error),
+    #[error("rlp error: {0}")]
+    RlpError(#[from] rlp::DecoderError),
 }
 
 impl From<Error> for JsValue {

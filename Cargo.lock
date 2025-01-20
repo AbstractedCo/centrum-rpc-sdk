@@ -990,6 +990,7 @@ dependencies = [
  "log",
  "merkleized-metadata",
  "parity-scale-codec",
+ "rlp",
  "rustc-hex",
  "scale-decode 0.14.0",
  "scale-encode 0.8.0",
