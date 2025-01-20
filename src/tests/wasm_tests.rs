@@ -1,4 +1,4 @@
-use super::*;
+use crate::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -35,7 +35,7 @@ async fn alice_faucet(
 
 #[ignore]
 #[wasm_bindgen_test]
-async fn wasm_demo_test_eth_tramsfer_works() {
+async fn wasm_demo_test_eth_transfer_works() {
     let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
@@ -82,7 +82,7 @@ async fn wasm_demo_test_btc_transfer_works() {
 
 #[ignore]
 #[wasm_bindgen_test]
-async fn wasm_demo_test_initialize_works() {
+async fn wasm_demo_test_initialize_alice_works() {
     wasm_bindgen_test_configure!(run_in_browser);
     let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
         .await

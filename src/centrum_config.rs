@@ -23,7 +23,7 @@ pub use centrum_runtime::{
     Hash as CentrumHash, Signature as CentrumSignature,
 };
 
-use centrum_primitives::MultiSignatureOrPasskeySignature;
+// use centrum_primitives::MultiSignatureOrPasskeySignature;
 
 /// Default set of commonly used types by Substrate runtimes.
 // Note: We only use this at the type level, so it should be impossible to

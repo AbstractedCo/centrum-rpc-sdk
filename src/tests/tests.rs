@@ -1,4 +1,4 @@
-use super::*;
+use crate::*;
 
 async fn alice_faucet(
     rpc: &CentrumRpcClient,
@@ -13,7 +13,7 @@ async fn alice_faucet(
 
     let payload = runtime::tx()
         .balances()
-        .transfer_keep_alive(staticmd, 10_000_000_000_000u128.into());
+        .transfer_keep_alive(staticmd, 1_000_000_000_000u128.into());
 
     let partial =
         create_partial_extrinsic(rpc, client, alice_signer.account_id(), Box::new(payload)).await?;
@@ -41,6 +41,10 @@ async fn demo_test_mainnet_swap_weth_for_pha_works() {
 
     info!("demo_test_builds");
 
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
     let recipt = demo
         .submit_eth_mainnet_swap_eth_for_pha(None)
         .await
@@ -62,6 +66,10 @@ async fn demo_test_swap_weth_to_uni_works() {
 
     info!("demo_test_builds");
 
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
     let recipt = demo
         .submit_eth_sepolia_swap_weth_for_uni(None)
         .await
@@ -70,7 +78,54 @@ async fn demo_test_swap_weth_to_uni_works() {
     info!("Eth recipt {:?}", recipt);
 }
 
+// #[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_eth_transfer_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let eth_balance = demo.query_eth_balance().await.unwrap();
+    info!("eth_balance: {}", eth_balance);
+
+    let e = demo
+        .submit_eth_sepolia_transfer(
+            "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
+            None,
+        )
+        .await;
+    info!("eth_sepolia_transfer result: {:?}", e);
+}
+
 #[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_bridge_to_base_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let bridge_result = demo.submit_eth_sepolia_bridge_to_base(None).await;
+    info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
+    bridge_result.unwrap();
+}
+
+// #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_account_from_phrase_works() {
     let demo = Demo::new_from_phrase(
@@ -84,9 +139,9 @@ async fn demo_test_account_from_phrase_works() {
     let demo_native_address = demo.get_native_address().await;
     info!("native_address: {}", demo_native_address);
 
-    // alice_faucet(&demo.rpc, &demo.client, &demo.signer)
-    //     .await
-    //     .unwrap();
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
 
     let native_balance = demo.query_native_balance().await;
     info!("native_balance: {:?}", native_balance);
@@ -104,38 +159,7 @@ async fn demo_test_account_from_phrase_works() {
 
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
-async fn demo_test_eth_tramsfer_works() {
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
-        .await
-        .expect("demo_test_initialize_works");
-
-    let eth_balance = demo.query_eth_balance().await.unwrap();
-    info!("eth_balance: {}", eth_balance);
-
-    let e = demo
-        .submit_eth_sepolia_transfer(
-            "0xc99F9d2549aa5B2BB5A07cEECe4AFf32a60ceB11".to_string(),
-            None,
-        )
-        .await;
-    info!("eth_sepolia_transfer result: {:?}", e);
-}
-
-#[ignore]
-#[tokio::test(flavor = "current_thread")]
-async fn demo_test_bridge_to_base_works() {
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
-        .await
-        .expect("demo_test_initialize_works");
-
-    let bridge_result = demo.submit_eth_sepolia_bridge_to_base(None).await;
-    info!("eth_sepolia_bridge_to_base result: {:?}", bridge_result);
-    bridge_result.unwrap();
-}
-
-#[ignore]
-#[tokio::test(flavor = "current_thread")]
-async fn demo_test_initialize_works() {
+async fn demo_test_initialize_alice_works() {
     let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
