@@ -711,6 +711,7 @@ impl Demo {
                 .unwrap()
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         };
+        avax_p_client.initialize_nonce(None).await?;
 
         Ok((
             rpc,
@@ -907,6 +908,7 @@ impl Demo {
         let provider = EvmProvider::<Http>::try_from(url)
             .map_err(|e| Error::Other(e.to_string()))?
             .nonce_manager(self.signer_mpc_public_key.clone().to_eth_address());
+        provider.initialize_nonce(None).await?;
         self.custom_clients_map.insert(name, Arc::new(provider));
         Ok(())
     }
@@ -961,6 +963,17 @@ impl Demo {
         info!("Submitted EVM transaction",);
 
         Ok(recipt)
+    }
+
+    pub async fn query_custom_client_nonce(&self, client_name: String) -> Result<u64, Error> {
+        let evm_client = self
+            .custom_clients_map
+            .get(&client_name)
+            .ok_or(Error::Other("Client not found".to_string()))?;
+
+        let nonce = evm_client.next().as_u64();
+
+        Ok(nonce)
     }
 
     pub async fn query_custom_client_balance(&self, client_name: String) -> Result<String, Error> {
