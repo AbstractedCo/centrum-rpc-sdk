@@ -28,6 +28,58 @@ async fn alice_faucet(
     Ok(())
 }
 
+// #[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_hyperliquid_market_buy_hype_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        false,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let recipt = demo
+        .hyperliquid_market_order("HYPE".to_string(), true, 0.1, 0.1)
+        .await;
+
+    info!("recipt: {:?}", recipt);
+
+    assert!(recipt.is_ok());
+}
+
+#[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_hyperliquid_queries() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        false,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+    info!("demo_test_builds");
+
+    let balances_result = demo.query_hyperliquid_balances().await;
+
+    info!("balances_result: {:?}", balances_result);
+    assert!(balances_result.is_ok());
+
+    let orders_result = demo.query_hyperliquid_orders().await;
+
+    info!("orders_result: {:?}", orders_result);
+    assert!(orders_result.is_ok());
+
+    let recent_orders_result = demo.query_hyperliquid_recent_orders().await;
+
+    info!("recent_orders_result: {:?}", recent_orders_result);
+    assert!(recent_orders_result.is_ok());
+}
+
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_mainnet_swap_weth_for_pha_works() {
@@ -78,7 +130,7 @@ async fn demo_test_swap_weth_to_uni_works() {
     info!("Eth recipt {:?}", recipt);
 }
 
-// #[ignore]
+#[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_eth_transfer_works() {
     let demo = Demo::new_from_phrase(
@@ -125,7 +177,7 @@ async fn demo_test_bridge_to_base_works() {
     bridge_result.unwrap();
 }
 
-// #[ignore]
+#[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_account_from_phrase_works() {
     let demo = Demo::new_from_phrase(

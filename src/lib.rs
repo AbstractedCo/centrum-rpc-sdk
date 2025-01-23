@@ -27,7 +27,7 @@ use ethers::{
         TransactionRequest, U256,
     },
 };
-
+use hyperliquid_rust_sdk::{BaseUrl, ExchangeClient, InfoClient, MarketOrderParams};
 use rlp::Decodable;
 use subxt::{
     backend::{legacy::LegacyRpcMethods, rpc::RpcClient},
@@ -634,6 +634,12 @@ pub struct BtcPayload {
     pub sighash: [u8; 32],
 }
 
+#[derive(Debug, Clone)]
+pub struct HyperLiquidClient {
+    pub info_client: Arc<InfoClient>,
+    pub exchange_client: Arc<ExchangeClient>,
+}
+
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct Demo {
@@ -645,6 +651,8 @@ pub struct Demo {
     pub eth_client: Arc<EvmClient>,
     #[wasm_bindgen(skip)]
     pub avax_p_client: Arc<EvmClient>,
+    #[wasm_bindgen(skip)]
+    pub hyperliquid_client: HyperLiquidClient,
     #[wasm_bindgen(skip)]
     pub custom_clients_map: HashMap<String, Arc<EvmClient>>,
     #[wasm_bindgen(skip)]
@@ -667,6 +675,7 @@ impl Demo {
             CentrumClient,
             EvmClient,
             EvmClient,
+            HyperLiquidClient,
             PublicKey,
             CompressedPublicKey,
         ),
@@ -693,31 +702,48 @@ impl Demo {
 
         let eth_client = if eth_testnet {
             EvmProvider::<Http>::try_from("https://ethereum-sepolia-rpc.publicnode.com")
-                .unwrap()
+                .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         } else {
             EvmProvider::<Http>::try_from("https://ethereum-rpc.publicnode.com")
-                .unwrap()
+                .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         };
         eth_client.initialize_nonce(None).await?;
 
         let avax_p_client = if eth_testnet {
             EvmProvider::<Http>::try_from("https://avalanche-fuji-p-chain-rpc.publicnode.com")
-                .unwrap()
+                .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         } else {
             EvmProvider::<Http>::try_from("https://avalanche-p-chain-rpc.publicnode.com")
-                .unwrap()
+                .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         };
-        avax_p_client.initialize_nonce(None).await?;
+        // avax_p_client.initialize_nonce(None).await?;
+
+        let hyperliquid_client = if eth_testnet {
+            HyperLiquidClient {
+                info_client: Arc::new(InfoClient::new(None, Some(BaseUrl::Testnet)).await?),
+                exchange_client: Arc::new(
+                    ExchangeClient::new(None, None, Some(BaseUrl::Testnet), None, None).await?,
+                ),
+            }
+        } else {
+            HyperLiquidClient {
+                info_client: Arc::new(InfoClient::new(None, Some(BaseUrl::Mainnet)).await?),
+                exchange_client: Arc::new(
+                    ExchangeClient::new(None, None, Some(BaseUrl::Mainnet), None, None).await?,
+                ),
+            }
+        };
 
         Ok((
             rpc,
             client,
             eth_client,
             avax_p_client,
+            hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
         ))
@@ -729,14 +755,22 @@ impl Demo {
         console_log::init_with_level(log::Level::Debug)?;
 
         let signer = csigner();
-        let (rpc, client, eth_client, avax_p_client, signer_mpc_public_key, compressed_public_key) =
-            Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        let (
+            rpc,
+            client,
+            eth_client,
+            avax_p_client,
+            hyperliquid_client,
+            signer_mpc_public_key,
+            compressed_public_key,
+        ) = Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
         Ok(Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
             avax_p_client: Arc::new(avax_p_client),
+            hyperliquid_client,
             signer: signer.clone(),
             signer_mpc_public_key,
             compressed_public_key,
@@ -756,14 +790,22 @@ impl Demo {
             .map_err(|e| Error::Other(e.to_string()))?
             .into();
 
-        let (rpc, client, eth_client, avax_p_client, signer_mpc_public_key, compressed_public_key) =
-            Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        let (
+            rpc,
+            client,
+            eth_client,
+            avax_p_client,
+            hyperliquid_client,
+            signer_mpc_public_key,
+            compressed_public_key,
+        ) = Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
         Ok(Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
             avax_p_client: Arc::new(avax_p_client),
+            hyperliquid_client,
             signer: signer.clone(),
             signer_mpc_public_key,
             compressed_public_key,
@@ -904,6 +946,51 @@ impl Demo {
         Ok(btc_sign_and_send_transaction(btc_payload, mpc_signature).await?)
     }
 
+    /// Places a market order on Hyperliquid, asset is the token symbol,
+    /// like ETH, HYPE, etc.
+    /// is_buy is true for buying, false for selling
+    /// slippage is in percentage 0.1 = 10%
+    pub async fn hyperliquid_market_order(
+        &self,
+        asset: String,
+        is_buy: bool,
+        amount: f64,
+        slippage: f64,
+    ) -> Result<String, Error> {
+        let hyperliquid_client = &self.hyperliquid_client.exchange_client.clone();
+
+        let (payload, hash, nonce) = hyperliquid_client
+            .market_open_payload(MarketOrderParams {
+                asset: asset.as_str(),
+                is_buy,
+                px: None,
+                sz: amount,
+                slippage: Some(slippage),
+                cloid: None,
+                wallet: None,
+            })
+            .await?;
+
+        let mpc_signature = self
+            .request_mpc_signature_for_generic_payload(hash.0.to_vec())
+            .await?;
+
+        let eth_signature = eth_sign_transaction(
+            hash.clone(),
+            27,
+            mpc_signature,
+            self.signer_mpc_public_key.clone(),
+        )?;
+
+        let recipt = hyperliquid_client
+            .post(payload, eth_signature, nonce)
+            .await?;
+
+        info!("Hyperliquid market buy hype recipt: {:?}", recipt);
+
+        Ok("Market order placed".to_string())
+    }
+
     pub async fn add_custom_client(&mut self, name: String, url: String) -> Result<(), Error> {
         let provider = EvmProvider::<Http>::try_from(url)
             .map_err(|e| Error::Other(e.to_string()))?
@@ -987,6 +1074,36 @@ impl Demo {
             .await?;
 
         Ok(bal.to_string())
+    }
+
+    pub async fn query_hyperliquid_balances(&self) -> Result<String, Error> {
+        let bal = self
+            .hyperliquid_client
+            .info_client
+            .user_token_balances(self.signer_mpc_public_key.clone().to_eth_address())
+            .await?;
+
+        Ok(format!("{:?}", bal.balances))
+    }
+
+    pub async fn query_hyperliquid_recent_orders(&self) -> Result<String, Error> {
+        let order = self
+            .hyperliquid_client
+            .info_client
+            .historical_orders(self.signer_mpc_public_key.clone().to_eth_address())
+            .await?;
+
+        Ok(format!("{:?}", order))
+    }
+
+    pub async fn query_hyperliquid_orders(&self) -> Result<String, Error> {
+        let order = self
+            .hyperliquid_client
+            .info_client
+            .open_orders(self.signer_mpc_public_key.clone().to_eth_address())
+            .await?;
+
+        Ok(format!("{:?}", order))
     }
 
     pub async fn query_eth_balance(&self) -> Result<String, Error> {

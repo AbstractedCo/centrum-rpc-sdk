@@ -25,6 +25,8 @@ pub enum Error {
     ),
     #[error("HexError: {0}")]
     HexError(#[from] hex::FromHexError),
+    #[error("Hyperliquid error: {0}")]
+    HyperliquidError(#[from] hyperliquid_rust_sdk::Error),
     #[error("rustc hex error: {0}")]
     RustcHexError(#[from] rustc_hex::FromHexError),
     #[error("sec1 error: {0}")]
