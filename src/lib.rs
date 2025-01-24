@@ -23,7 +23,7 @@ use ethers::{
     prelude::{Http, Provider as EvmProvider},
     providers::Middleware,
     types::{
-        transaction::eip2718::TypedTransaction, NameOrAddress, TransactionReceipt,
+        transaction::eip2718::TypedTransaction, Bytes, NameOrAddress, TransactionReceipt,
         TransactionRequest, U256,
     },
 };
@@ -53,7 +53,8 @@ pub use utils::*;
 
 pub use centrum_config::*;
 use contract_utils::{
-    L1StandardBridge, UniswapV2Router02, ETH_MAINNET_UNISWAP_V2_ROUTER,
+    AvaxLiquidStakingANKR, L1StandardBridge, UniswapV2Router02, AVALANCHE_LIQUID_STAKE_MAINNET,
+    AVALANCHE_LIQUID_STAKE_TESTNET, ETH_MAINNET_UNISWAP_V2_ROUTER,
     ETH_SEPOLIA_BASE_STANDARD_BRIDGE_ADDRESS, ETH_SEPOLIA_UNISWAP_V2_ROUTER, PHA_MAINNET,
     UNI_SEPOLIA, WETH_MAINNET, WETH_SEPOLIA,
 };
@@ -319,14 +320,13 @@ pub async fn request_mpc_derived_account(
     Ok(call_result)
 }
 
-pub async fn eth_sepolia_create_transfer_payload(
+pub async fn evm_create_transfer_payload(
     eth_provider: Arc<EvmClient>,
     from: PublicKey,
     dest: &str,
     amount: Option<u128>,
 ) -> Result<TypedTransaction, Error> {
     let chain_id = eth_provider.get_chainid().await?.as_u64();
-
     let eth_nonce = eth_provider.next();
 
     let to = {
@@ -356,8 +356,7 @@ pub async fn eth_sepolia_create_transfer_payload(
 
     eth_provider
         .fill_transaction(&mut eth_transaction, None)
-        .await
-        .unwrap();
+        .await?;
     Ok(eth_transaction)
 }
 
@@ -518,6 +517,89 @@ pub async fn eth_uniswap_eth_for_token_payload(
     Ok(eth_transaction)
 }
 
+pub async fn avalanche_liquid_stake_payload(
+    evm_provider: Arc<EvmClient>,
+    from: PublicKey,
+    amount: Option<u128>,
+) -> Result<TypedTransaction, Error> {
+    let chain_id = evm_provider.get_chainid().await?.as_u64();
+    let is_testnet = chain_id == 43113;
+    let nonce = evm_provider.next();
+
+    let ca = if is_testnet {
+        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_TESTNET)?
+    } else {
+        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_MAINNET)?
+    };
+    let to = NameOrAddress::from(ca.clone());
+    let contract = AvaxLiquidStakingANKR::new(ca, evm_provider.clone());
+
+    let call = contract.stake_and_claim_certs();
+    let calldata: Bytes = call
+        .calldata()
+        .ok_or(Error::Other("No calldata".to_string()))?;
+
+    let value = amount.unwrap_or(1_000_000_000_000_000_000u128);
+
+    let mut eth_transaction: TypedTransaction = TransactionRequest {
+        from: Some(from.clone().to_eth_address()),
+        to: Some(to.clone()),
+        value: Some(value.into()),
+        nonce: Some(nonce),
+        chain_id: Some(chain_id.into()),
+        gas: None,
+        gas_price: None,
+        data: Some(calldata),
+    }
+    .into();
+
+    evm_provider
+        .fill_transaction(&mut eth_transaction, None)
+        .await?;
+
+    Ok(eth_transaction)
+}
+
+pub async fn avalanche_liquid_unstake_payload(
+    evm_provider: Arc<EvmClient>,
+    from: PublicKey,
+) -> Result<TypedTransaction, Error> {
+    let chain_id = evm_provider.get_chainid().await?.as_u64();
+    let is_testnet = chain_id == 43113;
+    let nonce = evm_provider.next();
+
+    let ca = if is_testnet {
+        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_TESTNET)?
+    } else {
+        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_MAINNET)?
+    };
+    let to = NameOrAddress::from(ca.clone());
+    let contract = AvaxLiquidStakingANKR::new(ca, evm_provider.clone());
+
+    let call = contract.claim_certs(0u128.into());
+    let calldata: Bytes = call
+        .calldata()
+        .ok_or(Error::Other("No calldata".to_string()))?;
+
+    let mut eth_transaction: TypedTransaction = TransactionRequest {
+        from: Some(from.clone().to_eth_address()),
+        to: Some(to.clone()),
+        value: Some(0u128.into()),
+        nonce: Some(nonce),
+        chain_id: Some(chain_id.into()),
+        gas: None,
+        gas_price: None,
+        data: Some(calldata),
+    }
+    .into();
+
+    evm_provider
+        .fill_transaction(&mut eth_transaction, None)
+        .await?;
+
+    Ok(eth_transaction)
+}
+
 pub async fn evm_sign_and_send_transaction(
     eth_provider: Arc<EvmClient>,
     eth_transaction: TypedTransaction,
@@ -650,7 +732,7 @@ pub struct Demo {
     #[wasm_bindgen(skip)]
     pub eth_client: Arc<EvmClient>,
     #[wasm_bindgen(skip)]
-    pub avax_p_client: Arc<EvmClient>,
+    pub avax_c_client: Arc<EvmClient>,
     #[wasm_bindgen(skip)]
     pub hyperliquid_client: HyperLiquidClient,
     #[wasm_bindgen(skip)]
@@ -711,16 +793,16 @@ impl Demo {
         };
         eth_client.initialize_nonce(None).await?;
 
-        let avax_p_client = if eth_testnet {
-            EvmProvider::<Http>::try_from("https://avalanche-fuji-p-chain-rpc.publicnode.com")
+        let avax_c_client = if eth_testnet {
+            EvmProvider::<Http>::try_from("https://avalanche-fuji-c-chain-rpc.publicnode.com")
                 .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         } else {
-            EvmProvider::<Http>::try_from("https://avalanche-p-chain-rpc.publicnode.com")
+            EvmProvider::<Http>::try_from("https://avalanche-c-chain-rpc.publicnode.com")
                 .map_err(|_| Error::Other("failed to create rpc client".to_string()))?
                 .nonce_manager(signer_mpc_public_key.clone().to_eth_address())
         };
-        // avax_p_client.initialize_nonce(None).await?;
+        avax_c_client.initialize_nonce(None).await?;
 
         let hyperliquid_client = if eth_testnet {
             HyperLiquidClient {
@@ -742,7 +824,7 @@ impl Demo {
             rpc,
             client,
             eth_client,
-            avax_p_client,
+            avax_c_client,
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
@@ -759,7 +841,7 @@ impl Demo {
             rpc,
             client,
             eth_client,
-            avax_p_client,
+            avax_c_client,
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
@@ -769,7 +851,7 @@ impl Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
-            avax_p_client: Arc::new(avax_p_client),
+            avax_c_client: Arc::new(avax_c_client),
             hyperliquid_client,
             signer: signer.clone(),
             signer_mpc_public_key,
@@ -794,7 +876,7 @@ impl Demo {
             rpc,
             client,
             eth_client,
-            avax_p_client,
+            avax_c_client,
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
@@ -804,7 +886,7 @@ impl Demo {
             client,
             rpc,
             eth_client: Arc::new(eth_client),
-            avax_p_client: Arc::new(avax_p_client),
+            avax_c_client: Arc::new(avax_c_client),
             hyperliquid_client,
             signer: signer.clone(),
             signer_mpc_public_key,
@@ -862,7 +944,7 @@ impl Demo {
     ) -> Result<EthRecipt, Error> {
         let client_eth = self.eth_client.clone();
 
-        let eth_payload = eth_sepolia_create_transfer_payload(
+        let eth_payload = evm_create_transfer_payload(
             client_eth,
             self.signer_mpc_public_key.clone(),
             &dest,
@@ -946,6 +1028,55 @@ impl Demo {
         Ok(btc_sign_and_send_transaction(btc_payload, mpc_signature).await?)
     }
 
+    pub async fn avalance_chain_transfer(
+        &self,
+        dest: String,
+        amount: Option<u128>,
+    ) -> Result<EthRecipt, Error> {
+        let evm_payload = evm_create_transfer_payload(
+            self.avax_c_client.clone(),
+            self.signer_mpc_public_key.clone(),
+            dest.as_str(),
+            amount,
+        )
+        .await?;
+
+        let recipt = self
+            .sign_and_submit_payload_to_evm_client(self.avax_c_client.clone(), evm_payload)
+            .await?;
+
+        Ok(recipt)
+    }
+
+    pub async fn avalanche_liquid_stake(&self, amount: Option<u128>) -> Result<EthRecipt, Error> {
+        let evm_payload = avalanche_liquid_stake_payload(
+            self.avax_c_client.clone(),
+            self.signer_mpc_public_key.clone(),
+            amount,
+        )
+        .await?;
+
+        let recipt = self
+            .sign_and_submit_payload_to_evm_client(self.avax_c_client.clone(), evm_payload)
+            .await?;
+
+        Ok(recipt)
+    }
+
+    pub async fn avalanche_liquid_unstake(&self) -> Result<EthRecipt, Error> {
+        let evm_payload = avalanche_liquid_unstake_payload(
+            self.avax_c_client.clone(),
+            self.signer_mpc_public_key.clone(),
+        )
+        .await?;
+
+        let recipt = self
+            .sign_and_submit_payload_to_evm_client(self.avax_c_client.clone(), evm_payload)
+            .await?;
+
+        Ok(recipt)
+    }
+
     /// Places a market order on Hyperliquid, asset is the token symbol,
     /// like ETH, HYPE, etc.
     /// is_buy is true for buying, false for selling
@@ -1024,6 +1155,18 @@ impl Demo {
         let tx_rlp = rlp::Rlp::new(typed_tx_hex.as_slice());
         let eth_payload = TypedTransaction::decode(&tx_rlp)?;
 
+        let recipt = self
+            .sign_and_submit_payload_to_evm_client(evm_client.clone(), eth_payload)
+            .await?;
+
+        Ok(recipt)
+    }
+
+    async fn sign_and_submit_payload_to_evm_client(
+        &self,
+        evm_client: Arc<EvmClient>,
+        eth_payload: TypedTransaction,
+    ) -> Result<EthRecipt, Error> {
         let eth_sighash = eth_payload.sighash();
 
         let mpc_signature = internal_request_mpc_signature_payload(

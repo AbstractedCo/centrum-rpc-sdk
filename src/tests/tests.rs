@@ -28,13 +28,84 @@ async fn alice_faucet(
     Ok(())
 }
 
-// #[ignore]
+#[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_avalanche_liquid_unstake_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let res = demo.avalanche_liquid_unstake().await;
+
+    info!("res: {:?}", res);
+
+    assert!(res.is_ok());
+}
+
+#[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_avalanche_liquid_stake_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let res = demo.avalanche_liquid_stake(None).await;
+
+    info!("res: {:?}", res);
+
+    assert!(res.is_ok());
+}
+
+#[ignore]
+#[tokio::test(flavor = "current_thread")]
+async fn demo_test_avalanche_transfer_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+        .await
+        .unwrap();
+
+    let res = demo
+        .avalance_chain_transfer(
+            "0x62Afb024E6FD23CDcb6Aae636FDbe4cBc4Bd9120".to_string(),
+            None,
+        )
+        .await;
+
+    info!("res: {:?}", res);
+
+    assert!(res.is_ok());
+}
+
+#[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_hyperliquid_market_buy_hype_works() {
     let demo = Demo::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
-        false,
+        true,
     )
     .await
     .expect("demo_test_initialize_works");
@@ -58,7 +129,7 @@ async fn demo_test_hyperliquid_queries() {
     let demo = Demo::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
-        false,
+        true,
     )
     .await
     .expect("demo_test_initialize_works");

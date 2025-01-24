@@ -12,6 +12,8 @@ pub const WETH_MAINNET: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 pub const WETH_SEPOLIA: &str = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14";
 pub const UNI_SEPOLIA: &str = "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984";
 pub const PHA_MAINNET: &str = "0x6c5bA91642F10282b576d91922Ae6448C9d52f4E";
+pub const AVALANCHE_LIQUID_STAKE_TESTNET: &str = "0x0c29d40cbd3c9073f4c0c96bf88ae1b4b4fe1d11";
+pub const AVALANCHE_LIQUID_STAKE_MAINNET: &str = "0x7BAa1E3bFe49db8361680785182B80BB420A836D";
 
 abigen!(
     L1StandardBridge,
@@ -98,4 +100,30 @@ abigen!(
         "stateMutability": "view",
         "type": "function"
     }]"#
+);
+
+abigen!(
+    AvaxLiquidStakingANKR,
+    r#"[
+    {
+        "inputs": [],
+        "name": "stakeAndClaimCerts",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "claimCerts",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    }
+]"#
 );
