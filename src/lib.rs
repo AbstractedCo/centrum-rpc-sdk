@@ -54,7 +54,7 @@ pub use utils::*;
 pub use centrum_config::*;
 use contract_utils::{
     AvaxLiquidStakingANKR, L1StandardBridge, UniswapV2Router02, AVALANCHE_LIQUID_STAKE_MAINNET,
-    AVALANCHE_LIQUID_STAKE_TESTNET, ETH_MAINNET_UNISWAP_V2_ROUTER,
+    AVALANCHE_LIQUID_STAKE_TESTNET, ERC20, ETH_MAINNET_UNISWAP_V2_ROUTER,
     ETH_SEPOLIA_BASE_STANDARD_BRIDGE_ADDRESS, ETH_SEPOLIA_UNISWAP_V2_ROUTER, PHA_MAINNET,
     UNI_SEPOLIA, WETH_MAINNET, WETH_SEPOLIA,
 };
@@ -1219,6 +1219,23 @@ impl Demo {
         Ok(bal.to_string())
     }
 
+    pub async fn query_custom_client_erc20_balance(
+        &self,
+        client_name: String,
+        erc20_address: String,
+    ) -> Result<String, Error> {
+        let evm_client = self
+            .custom_clients_map
+            .get(&client_name)
+            .ok_or(Error::Other("Client not found".to_string()))?;
+
+        let bal = self
+            .query_evm_erc20_balance(evm_client.clone(), erc20_address)
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
     pub async fn query_hyperliquid_balances(&self) -> Result<String, Error> {
         let bal = self
             .hyperliquid_client
@@ -1253,6 +1270,50 @@ impl Demo {
         let bal = self
             .eth_client
             .get_balance(self.signer_mpc_public_key.clone().to_eth_address(), None)
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
+    pub async fn query_eth_erc20_balance(&self, erc20_address: String) -> Result<String, Error> {
+        let bal = self
+            .query_evm_erc20_balance(self.eth_client.clone(), erc20_address)
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
+    async fn query_evm_erc20_balance(
+        &self,
+        evm_client: Arc<EvmClient>,
+        erc20_address: String,
+    ) -> Result<String, Error> {
+        let ca = ContractAddress::from_str(&erc20_address)?;
+        let erc20 = ERC20::new(ca, evm_client.clone());
+
+        let bal: U256 = erc20
+            .balance_of(self.signer_mpc_public_key.clone().to_eth_address())
+            .call()
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
+    pub async fn query_avax_balance(&self) -> Result<String, Error> {
+        let bal = self
+            .avax_c_client
+            .get_balance(self.signer_mpc_public_key.clone().to_eth_address(), None)
+            .await?;
+
+        Ok(bal.to_string())
+    }
+
+    pub async fn query_avalanche_erc20_balance(
+        &self,
+        erc20_address: String,
+    ) -> Result<String, Error> {
+        let bal = self
+            .query_evm_erc20_balance(self.avax_c_client.clone(), erc20_address)
             .await?;
 
         Ok(bal.to_string())

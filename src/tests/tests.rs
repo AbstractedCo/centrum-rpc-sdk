@@ -52,6 +52,26 @@ async fn demo_test_avalanche_liquid_unstake_works() {
 
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
+async fn demo_test_avalanche_query_erc20_balance_works() {
+    let demo = Demo::new_from_phrase(
+        "ws://127.0.0.1:9944",
+        "south middle eagle purchase galaxy obscure frown giggle kit this future host",
+        true,
+    )
+    .await
+    .expect("demo_test_initialize_works");
+
+    let res = demo
+        .query_avalanche_erc20_balance("0x22f70fE6C3949cDcA413A6D441D7972255440660".to_string())
+        .await;
+
+    info!("res: {:?}", res);
+
+    assert!(res.is_ok());
+}
+
+#[ignore]
+#[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_liquid_stake_works() {
     let demo = Demo::new_from_phrase(
         "ws://127.0.0.1:9944",

@@ -16,6 +16,29 @@ pub const AVALANCHE_LIQUID_STAKE_TESTNET: &str = "0x0c29d40cbd3c9073f4c0c96bf88a
 pub const AVALANCHE_LIQUID_STAKE_MAINNET: &str = "0x7BAa1E3bFe49db8361680785182B80BB420A836D";
 
 abigen!(
+    ERC20,
+    r#"[
+      {
+        "constant": true,
+        "inputs": [
+          {
+            "name": "account",
+            "type": "address"
+          }
+        ],
+        "name": "balanceOf",
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256"
+          }
+        ],
+        "type": "function"
+      }
+    ]"#
+);
+
+abigen!(
     L1StandardBridge,
     r#"[
     {
