@@ -972,6 +972,7 @@ name = "centrum-sdk"
 version = "0.1.0"
 dependencies = [
  "array-bytes",
+ "async-trait",
  "bitcoin",
  "centrum-primitives",
  "centrum-runtime",

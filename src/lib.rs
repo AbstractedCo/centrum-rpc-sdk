@@ -5,7 +5,9 @@
 //! Using the SDK, developers can esily sign any off-chain transactions for any evm compatible chain and also interact
 //! directly with them via the SDK.
 
+use async_trait::async_trait;
 use codec::Encode;
+use ethers::types::H160;
 use sp_std::{str::FromStr, sync::Arc};
 use std::collections::HashMap;
 
@@ -61,11 +63,85 @@ pub struct HyperLiquidClient {
     pub exchange_client: Arc<ExchangeClient>,
 }
 
-/// Struct representing a Centrum SDK client, provides a high level interface for interacting with the centrum network,
+#[derive(Debug, Clone)]
+pub struct CentrumClient {
+    pub native_client: NativeClient,
+    pub native_rpc: NativeRpcClient,
+}
+
+/// This trait will hold the methods for interacting with the Centrum Network.
+///
+/// It will hold methods for building the transaction payloads and submitting them to the Centrum Network.
+/// Focused on offline signing primarily but will also support local signer using a seed phrase or private key.
+#[async_trait]
+pub trait CentrumInterface {
+    async fn create_native_clients(url: String) -> Result<(NativeClient, NativeRpcClient), Error> {
+        let client = start_client_from_url(&url).await?;
+        let rpc = start_raw_rpc_client_from_url(&url).await?;
+        Ok((client, rpc))
+    }
+}
+
+/// This trait will be the interface for interacting with evm chains.
+///
+/// It will hold methods for creating payloads for the mpc protocol to sign, and submitting the payloads to the evm chain.
+#[async_trait]
+pub trait EvmInterface {
+    async fn create_evm_clients(url: String, public_key: H160) -> Result<EvmClient, Error> {
+        let client = EvmProvider::<Http>::try_from(url)
+            .map_err(|e| Error::Other(e.to_string()))?
+            .nonce_manager(public_key.clone());
+        client.initialize_nonce(None).await?;
+        Ok(client)
+    }
+}
+
+/// This will provide high level interfaces for offline signing using 3rd party wallets.
+#[derive(Debug, Clone)]
+pub struct CentrumOfflineAgent {
+    pub centrum_client: CentrumClient,
+    pub hyperliquid_client: Option<HyperLiquidClient>,
+    pub evm_clients: HashMap<String, Arc<EvmClient>>,
+    pub signer_mpc_public_key: Option<PublicKey>,
+    pub evm_public_key: Option<H160>,
+    pub compressed_public_key: Option<CompressedPublicKey>,
+}
+
+impl CentrumInterface for CentrumClient {}
+
+impl EvmInterface for CentrumOfflineAgent {}
+
+/// Here we will have the interface for using the `CentrumInterface` and `EvmInterface` traits using a 3rd party wallet,
+/// to interact with the Centrum Network and EVM chains.
+///
+/// Signature request payloads have to be signed by a wallet to then be submitted for the mpc protocol to provide
+/// the signatures for other chains, it will also provide the evm/btc transaction payloads for the mpc protocol to sign.
+impl CentrumOfflineAgent {
+    pub async fn new(centrum_node_url: &str) -> Result<CentrumOfflineAgent, Error> {
+        let (native_client, native_rpc) =
+            CentrumClient::create_native_clients(centrum_node_url.to_string()).await?;
+
+        Ok(CentrumOfflineAgent {
+            centrum_client: CentrumClient {
+                native_client,
+                native_rpc,
+            },
+            hyperliquid_client: None,
+            evm_clients: HashMap::new(),
+            signer_mpc_public_key: None,
+            evm_public_key: None,
+            compressed_public_key: None,
+        })
+    }
+}
+
+/// Struct representing a Centrum SDK client, provides an abstracted interface for interacting with the centrum network,
 /// as well as btc and any other evm compatible chains.
+///
+/// Uses a local signer from a seed phrase, so all signature requests can be submitted directly.
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
-pub struct DemoClient {
+pub struct CentrumSignerAgent {
     #[wasm_bindgen(skip)]
     pub native_client: NativeClient,
     #[wasm_bindgen(skip)]
@@ -86,8 +162,14 @@ pub struct DemoClient {
     pub compressed_public_key: CompressedPublicKey,
 }
 
+impl CentrumInterface for CentrumSignerAgent {}
+
+impl EvmInterface for CentrumSignerAgent {}
+
+/// This impl here will be used for abstracting the usage of the other traits: `CentrumInterface` and `EvmInterface`
+/// leveraging a local signer from a seed phrase.
 #[wasm_bindgen]
-impl DemoClient {
+impl CentrumSignerAgent {
     async fn create_clients(
         signer: CentrumMultiSigner,
         centrum_node_url: &str,
@@ -173,7 +255,10 @@ impl DemoClient {
     }
 
     #[wasm_bindgen(constructor)]
-    pub async fn new_alice(centrum_node_url: &str, eth_testnet: bool) -> Result<DemoClient, Error> {
+    pub async fn new_alice(
+        centrum_node_url: &str,
+        eth_testnet: bool,
+    ) -> Result<CentrumSignerAgent, Error> {
         #[cfg(all(debug_assertions, feature = "console_log_dep"))]
         console_log::init_with_level(log::Level::Debug)?;
 
@@ -186,9 +271,10 @@ impl DemoClient {
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
-        ) = DemoClient::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        ) = CentrumSignerAgent::create_clients(signer.clone(), centrum_node_url, eth_testnet)
+            .await?;
 
-        Ok(DemoClient {
+        Ok(CentrumSignerAgent {
             native_client,
             native_rpc,
             eth_client: Arc::new(eth_client),
@@ -205,7 +291,7 @@ impl DemoClient {
         centrum_node_url: &str,
         seed_phrase: &str,
         eth_testnet: bool,
-    ) -> Result<DemoClient, Error> {
+    ) -> Result<CentrumSignerAgent, Error> {
         #[cfg(all(debug_assertions, feature = "console_log_dep"))]
         console_log::init_with_level(log::Level::Debug)?;
         let uri = SecretUri::from_str(seed_phrase).map_err(|e| Error::Other(e.to_string()))?;
@@ -221,9 +307,10 @@ impl DemoClient {
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
-        ) = DemoClient::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        ) = CentrumSignerAgent::create_clients(signer.clone(), centrum_node_url, eth_testnet)
+            .await?;
 
-        Ok(DemoClient {
+        Ok(CentrumSignerAgent {
             native_client,
             native_rpc,
             eth_client: Arc::new(eth_client),

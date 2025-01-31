@@ -31,7 +31,7 @@ async fn alice_faucet(
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_liquid_unstake_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -53,7 +53,7 @@ async fn demo_test_avalanche_liquid_unstake_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_query_erc20_balance_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -73,7 +73,7 @@ async fn demo_test_avalanche_query_erc20_balance_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_liquid_stake_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -95,7 +95,7 @@ async fn demo_test_avalanche_liquid_stake_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_transfer_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -122,7 +122,7 @@ async fn demo_test_avalanche_transfer_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_hyperliquid_market_buy_hype_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -146,7 +146,7 @@ async fn demo_test_hyperliquid_market_buy_hype_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_hyperliquid_queries() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -174,7 +174,7 @@ async fn demo_test_hyperliquid_queries() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_mainnet_swap_weth_for_pha_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         false,
@@ -199,7 +199,7 @@ async fn demo_test_mainnet_swap_weth_for_pha_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_swap_weth_to_uni_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -224,7 +224,7 @@ async fn demo_test_swap_weth_to_uni_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_eth_transfer_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -251,7 +251,7 @@ async fn demo_test_eth_transfer_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_bridge_to_base_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -271,7 +271,7 @@ async fn demo_test_bridge_to_base_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_account_from_phrase_works() {
-    let demo = DemoClient::new_from_phrase(
+    let demo = CentrumSignerAgent::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -303,7 +303,7 @@ async fn demo_test_account_from_phrase_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_initialize_alice_works() {
-    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
+    let demo = CentrumSignerAgent::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 
