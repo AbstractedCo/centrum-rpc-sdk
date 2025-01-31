@@ -1,11 +1,11 @@
 use bitcoin::{Address as BitcoinAddress, Amount, CompressedPublicKey, KnownHrp};
 use elliptic_curve::{
-    ops::Reduce,
-    point::AffineCoordinates,
-    scalar::FromUintUnchecked,
-    sec1::{FromEncodedPoint, ToEncodedPoint},
+    ops::Reduce, point::AffineCoordinates, scalar::FromUintUnchecked, sec1::FromEncodedPoint,
     CurveArithmetic,
 };
+
+pub use elliptic_curve::sec1::ToEncodedPoint;
+
 use ethers::{
     middleware::MiddlewareBuilder,
     prelude::{Http, Provider as EthProvider},

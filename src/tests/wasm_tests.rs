@@ -6,8 +6,8 @@ use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
 async fn alice_faucet(
-    rpc: &CentrumRpcClient,
-    client: &CentrumClient,
+    rpc: &NativeRpcClient,
+    client: &NativeClient,
     dest: &CentrumMultiSigner,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let alice_signer = csigner();
@@ -36,7 +36,7 @@ async fn alice_faucet(
 #[ignore]
 #[wasm_bindgen_test]
 async fn wasm_demo_test_eth_transfer_works() {
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
+    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 
@@ -56,7 +56,7 @@ async fn wasm_demo_test_eth_transfer_works() {
 #[wasm_bindgen_test]
 async fn wasm_demo_test_bridge_to_base_works() {
     wasm_bindgen_test_configure!(run_in_browser);
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
+    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 
@@ -69,7 +69,7 @@ async fn wasm_demo_test_bridge_to_base_works() {
 #[wasm_bindgen_test]
 async fn wasm_demo_test_btc_transfer_works() {
     wasm_bindgen_test_configure!(run_in_browser);
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
+    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 
@@ -84,7 +84,7 @@ async fn wasm_demo_test_btc_transfer_works() {
 #[wasm_bindgen_test]
 async fn wasm_demo_test_initialize_alice_works() {
     wasm_bindgen_test_configure!(run_in_browser);
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
+    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 

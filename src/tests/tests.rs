@@ -1,8 +1,8 @@
 use crate::*;
 
 async fn alice_faucet(
-    rpc: &CentrumRpcClient,
-    client: &CentrumClient,
+    rpc: &NativeRpcClient,
+    client: &NativeClient,
     dest: &CentrumMultiSigner,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let alice_signer = csigner();
@@ -31,7 +31,7 @@ async fn alice_faucet(
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_liquid_unstake_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -39,7 +39,7 @@ async fn demo_test_avalanche_liquid_unstake_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -53,7 +53,7 @@ async fn demo_test_avalanche_liquid_unstake_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_query_erc20_balance_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -73,7 +73,7 @@ async fn demo_test_avalanche_query_erc20_balance_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_liquid_stake_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -81,7 +81,7 @@ async fn demo_test_avalanche_liquid_stake_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -95,7 +95,7 @@ async fn demo_test_avalanche_liquid_stake_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_avalanche_transfer_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -103,7 +103,7 @@ async fn demo_test_avalanche_transfer_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -122,7 +122,7 @@ async fn demo_test_avalanche_transfer_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_hyperliquid_market_buy_hype_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -130,7 +130,7 @@ async fn demo_test_hyperliquid_market_buy_hype_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -146,7 +146,7 @@ async fn demo_test_hyperliquid_market_buy_hype_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_hyperliquid_queries() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -174,7 +174,7 @@ async fn demo_test_hyperliquid_queries() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_mainnet_swap_weth_for_pha_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         false,
@@ -184,7 +184,7 @@ async fn demo_test_mainnet_swap_weth_for_pha_works() {
 
     info!("demo_test_builds");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -199,7 +199,7 @@ async fn demo_test_mainnet_swap_weth_for_pha_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_swap_weth_to_uni_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -209,7 +209,7 @@ async fn demo_test_swap_weth_to_uni_works() {
 
     info!("demo_test_builds");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -224,7 +224,7 @@ async fn demo_test_swap_weth_to_uni_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_eth_transfer_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -232,7 +232,7 @@ async fn demo_test_eth_transfer_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -251,7 +251,7 @@ async fn demo_test_eth_transfer_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_bridge_to_base_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -259,7 +259,7 @@ async fn demo_test_bridge_to_base_works() {
     .await
     .expect("demo_test_initialize_works");
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -271,7 +271,7 @@ async fn demo_test_bridge_to_base_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_account_from_phrase_works() {
-    let demo = Demo::new_from_phrase(
+    let demo = DemoClient::new_from_phrase(
         "ws://127.0.0.1:9944",
         "south middle eagle purchase galaxy obscure frown giggle kit this future host",
         true,
@@ -282,7 +282,7 @@ async fn demo_test_account_from_phrase_works() {
     let demo_native_address = demo.get_native_address().await;
     info!("native_address: {}", demo_native_address);
 
-    alice_faucet(&demo.rpc, &demo.client, &demo.signer)
+    alice_faucet(&demo.native_rpc, &demo.native_client, &demo.signer)
         .await
         .unwrap();
 
@@ -303,7 +303,7 @@ async fn demo_test_account_from_phrase_works() {
 #[ignore]
 #[tokio::test(flavor = "current_thread")]
 async fn demo_test_initialize_alice_works() {
-    let demo = Demo::new_alice("ws://127.0.0.1:9944", true)
+    let demo = DemoClient::new_alice("ws://127.0.0.1:9944", true)
         .await
         .expect("demo_test_initialize_works");
 

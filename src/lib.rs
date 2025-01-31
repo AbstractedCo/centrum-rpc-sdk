@@ -1,6 +1,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+//! # Centrum SDK heavily WIP.
+//! This SDK provides a high level interface for interacting with the centrum network.
+//! It provides a way to create and sign transactions using our mpc, as well as query the state of the network.
+//! Using the SDK, developers can esily sign any off-chain transactions for any evm compatible chain and also interact
+//! directly with them via the SDK.
 
-// use frame_metadata::RuntimeMetadataPrefixed;
 use codec::Encode;
 use sp_std::{str::FromStr, sync::Arc};
 use std::collections::HashMap;
@@ -14,44 +18,26 @@ use log::{info, warn}; // Use log crate when building application
 #[cfg(all(test, not(feature = "console_log_dep")))]
 use std::{println as info, println as warn}; // Workaround to use prinltn! for logs
 
-use bitcoin::CompressedPublicKey;
-use elliptic_curve::sec1::ToEncodedPoint;
-
-use ethers::{
-    abi::Address as ContractAddress,
-    middleware::{MiddlewareBuilder, NonceManagerMiddleware},
-    prelude::{Http, Provider as EvmProvider},
-    providers::Middleware,
-    types::{
-        transaction::eip2718::TypedTransaction, Bytes, NameOrAddress, TransactionReceipt,
-        TransactionRequest, U256,
-    },
-};
-use hyperliquid_rust_sdk::{BaseUrl, ExchangeClient, InfoClient, MarketOrderParams};
-use rlp::Decodable;
-use subxt::{
-    backend::{legacy::LegacyRpcMethods, rpc::RpcClient},
-    config::ExtrinsicParams,
-    tx::{PartialExtrinsic, Payload, Signer, SubmittableExtrinsic},
-    utils::Static,
-    OnlineClient,
-};
-
 use subxt_signer::SecretUri;
-
-use tokio::time::{sleep, Duration};
 
 use wasm_bindgen::prelude::*;
 // use wasm_bindgen_futures::wasm_bindgen::convert::IntoWasmAbi;
 
-pub mod centrum_config;
+pub mod btc_calls;
+pub mod centrum_calls;
 pub mod error;
+pub mod evm_calls;
+#[allow(dead_code, unused_imports)]
+mod tests;
 #[allow(unused_imports)]
 pub mod utils;
 
-pub use utils::*;
+use btc_calls::*;
+use centrum_calls::*;
+use evm_calls::*;
 
-pub use centrum_config::*;
+pub use utils::{centrum_config::*, *};
+
 use contract_utils::{
     AvaxLiquidStakingANKR, L1StandardBridge, UniswapV2Router02, AVALANCHE_LIQUID_STAKE_MAINNET,
     AVALANCHE_LIQUID_STAKE_TESTNET, ERC20, ETH_MAINNET_UNISWAP_V2_ROUTER,
@@ -62,659 +48,12 @@ pub use error::Error;
 #[allow(unused_imports)]
 use signature_utils::{
     btc_sig_from_mpc_sig, eth_sign_transaction, testnet_btc_address, EthRecipt, PublicKey,
-    HUNDRED_SATS,
+    ToEncodedPoint, HUNDRED_SATS,
 };
 
-#[allow(dead_code, unused_imports)]
-mod tests;
-
-const _CHOPSTICKS_MOCK_SIGNATURE: [u8; 64] = [
-    0xde, 0xad, 0xbe, 0xef, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
-    0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
-    0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
-    0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd,
-];
-
-// const METADATA_PATH: &str = "artifacts/metadata-centrum.scale";
-
-const _TOKEN_SYMBOL: &str = "Unit";
-
-const PATH: &[u8] = b"test";
-
-#[subxt::subxt(
-    runtime_metadata_path = "artifacts/metadata-centrum.scale",
-    derive_for_all_types = "Eq, PartialEq",
-    substitute_type(
-        path = "sp_runtime::multiaddress::MultiAddress<A, B>",
-        with = "::subxt::utils::Static<sp_runtime::MultiAddress<A, B>>"
-    ),
-    substitute_type(
-        path = "centrum_primitives::Account",
-        with = "::subxt::utils::Static<centrum_primitives::Account>"
-    )
-)]
-pub mod runtime {}
-
-pub type CentrumClient = OnlineClient<CentrumConfig>;
-pub type CentrumRpcClient = LegacyRpcMethods<CentrumConfig>;
+pub type NativeClient = OnlineClient<CentrumConfig>;
+pub type NativeRpcClient = LegacyRpcMethods<CentrumConfig>;
 pub type EvmClient = NonceManagerMiddleware<EvmProvider<Http>>;
-
-#[wasm_bindgen(module = "/functions.js")]
-extern "C" {
-    #[wasm_bindgen]
-    async fn buildTx(to: String, from: String, amount: String) -> JsValue;
-
-    #[wasm_bindgen]
-    async fn signPayloadPls(source: String, payload: JsValue) -> JsValue;
-
-    #[wasm_bindgen]
-    async fn buildUnsignedTransaction(from: String, to: String, amount: String) -> JsValue;
-
-    #[wasm_bindgen]
-    fn hashFromUnsignedTx(unsignedTx: JsValue) -> String;
-
-    #[wasm_bindgen]
-    async fn getBitcoinBalance(address: String) -> JsValue;
-
-    #[wasm_bindgen]
-    async fn fillTxAndSubmit(unsignedTx: JsValue, signature: String, pubkey: String) -> JsValue;
-}
-
-async fn start_rpc_client_from_url(url: &str) -> Result<RpcClient, subxt::Error> {
-    RpcClient::from_url(url).await
-}
-
-async fn start_local_rpc_client() -> Result<RpcClient, subxt::Error> {
-    if let Ok(rpc) = RpcClient::from_url("ws://127.0.0.1:9944").await {
-        Ok(rpc)
-    } else {
-        Ok(RpcClient::from_url("ws://localhost:8000").await?)
-    }
-}
-
-pub async fn start_client_from_url(url: &str) -> Result<CentrumClient, subxt::Error> {
-    OnlineClient::<CentrumConfig>::from_rpc_client(start_rpc_client_from_url(url).await?).await
-}
-
-pub async fn start_local_client() -> Result<CentrumClient, subxt::Error> {
-    OnlineClient::<CentrumConfig>::from_rpc_client(start_local_rpc_client().await?).await
-}
-
-pub async fn start_raw_local_rpc_client() -> Result<CentrumRpcClient, subxt::Error> {
-    Ok(LegacyRpcMethods::<CentrumConfig>::new(
-        start_local_rpc_client().await?,
-    ))
-}
-
-pub async fn start_raw_rpc_client_from_url(url: &str) -> Result<CentrumRpcClient, subxt::Error> {
-    Ok(LegacyRpcMethods::<CentrumConfig>::new(
-        start_rpc_client_from_url(url).await?,
-    ))
-}
-
-pub fn csigner() -> CentrumMultiSigner {
-    subxt_signer::sr25519::dev::alice().into()
-}
-
-/// for the demo
-pub async fn demo_sign_native_with_signer(
-    partial: &PartialExtrinsic<
-        centrum_config::CentrumConfig,
-        OnlineClient<centrum_config::CentrumConfig>,
-    >,
-    signer: &CentrumMultiSigner,
-) -> CentrumSignature {
-    signer.sign(&partial.signer_payload())
-}
-
-/// Sign a native transaction.
-pub async fn apply_native_signature_to_transaction<A, S>(
-    partial_ext: &PartialExtrinsic<CentrumConfig, CentrumClient>,
-    account: A,
-    signature: S,
-) -> SubmittableExtrinsic<CentrumConfig, OnlineClient<CentrumConfig>>
-where
-    A: Into<CentrumMultiAccount>,
-    S: Into<CentrumMultiSignature>,
-{
-    partial_ext.sign_with_address_and_signature(
-        &CentrumAddress::from(account.into()),
-        &CentrumSignature::from(signature.into()),
-    )
-}
-
-pub async fn submit_native_transaction(
-    ext: SubmittableExtrinsic<CentrumConfig, OnlineClient<CentrumConfig>>,
-) -> Result<(), Error> {
-    let result = ext.submit_and_watch().await?;
-
-    info!("submit native transaction result: {:?}", result);
-
-    info!("waiting for transaction to be included...");
-
-    match result.wait_for_finalized_success().await {
-        Ok(_) => {
-            info!("transaction finalized");
-            Ok(())
-        }
-        Err(err) => {
-            warn!("transaction error: {:?}", err);
-            Err(Error::SubxtError(err))
-        }
-    }
-}
-
-/// Submits a signature request extrinsic and waits for the signature to be delivered.
-pub async fn submit_mpc_signature_request(
-    client: &CentrumClient,
-    rpc: &CentrumRpcClient,
-    ext: SubmittableExtrinsic<CentrumConfig, OnlineClient<CentrumConfig>>,
-) -> Result<runtime::mpc_manager::events::SignatureDelivered, Error> {
-    let result = ext.submit_and_watch().await?;
-
-    let mut current_header = rpc.chain_get_header(None).await?.unwrap().number;
-
-    info!("Submitted mpc signature request");
-
-    info!("waiting for transaction to be included...");
-
-    let res = result.wait_for_finalized_success().await?;
-    info!("signature request submitted");
-
-    let sig_request = res
-        .find_first::<runtime::mpc_manager::events::SignatureRequested>()?
-        .ok_or(Error::SubxtError(subxt::Error::Other(
-            "signature request not found".to_string(),
-        )))?;
-
-    let _epsilon = sig_request.epsilon;
-
-    // todo!(re-write this crap for the love of god)
-    for _ in 1..=5 {
-        current_header += 1;
-        let bhash = {
-            let mut _bhash = rpc
-                .chain_get_block_hash(Some((current_header).into()))
-                .await?;
-            while let None = _bhash {
-                sleep(Duration::from_millis(3000)).await;
-                _bhash = rpc
-                    .chain_get_block_hash(Some((current_header).into()))
-                    .await?;
-            }
-            _bhash.unwrap()
-        };
-
-        let _e = client.events().at(bhash).await?;
-
-        let _ev: Vec<_> = _e
-            .find::<runtime::mpc_manager::events::SignatureDelivered>()
-            .filter_map(|e| e.ok())
-            .collect();
-        for e in _ev {
-            if e.epsilon == _epsilon {
-                info!("Signature delivered");
-                // info!("Epsilon: {:?} \n big_r: {:?} \n payload: {:?} \n payload: {:?} \n delivered_by: {:?}", e.epsilon, e.s, e.big_r, e.payload, e.delivered_by);
-            }
-            return Ok(e);
-        }
-    }
-
-    Err(Error::SubxtError(subxt::Error::Other(
-        "signature not found".to_string(),
-    )))
-}
-
-/// Creates a partial extrinsic with default params for offline signature.
-pub async fn create_partial_extrinsic<A>(
-    rpc: &CentrumRpcClient,
-    client: &CentrumClient,
-    account: A,
-    payload: Box<dyn Payload>,
-) -> Result<
-    PartialExtrinsic<centrum_config::CentrumConfig, OnlineClient<centrum_config::CentrumConfig>>,
-    subxt::Error,
->
-where
-    A: Into<CentrumMultiAccount>,
-{
-    let current_nonce = rpc
-        .system_account_next_index(&CentrumAccountId::from(account.into()))
-        .await?;
-
-    let params: <<CentrumConfig as subxt::Config>::ExtrinsicParams as ExtrinsicParams<
-        CentrumConfig,
-    >>::Params = SubstrateExtrinsicParamsBuilder::new()
-        .nonce(current_nonce)
-        .build();
-    // client.storage().
-    client.tx().create_partial_signed_offline(&payload, params)
-}
-
-/// todo!(Creates a partial extrinsic from a enum of possible extrinsics).
-pub async fn create_rmrk_payload() -> Result<Box<dyn Payload>, subxt::Error> {
-    Ok(Box::new(runtime::tx().system().remark(vec![0u8; 32])))
-}
-
-pub async fn request_mpc_signature_payload(payload: [u8; 32]) -> Box<dyn Payload> {
-    Box::new(
-        runtime::tx()
-            .mpc_manager()
-            .request_signature(payload, PATH.to_vec()),
-    )
-}
-
-pub async fn request_mpc_derived_account(
-    client: &CentrumClient,
-    account: CentrumAccountId,
-) -> Result<PublicKey, Error> {
-    let values = (account, PATH).encode();
-
-    let call_result: PublicKey = client
-        .runtime_api()
-        .at_latest()
-        .await?
-        .call_raw::<PublicKey>("MpcManagerApi_derive_account", Some(&values))
-        .await?;
-
-    Ok(call_result)
-}
-
-pub async fn evm_create_transfer_payload(
-    eth_provider: Arc<EvmClient>,
-    from: PublicKey,
-    dest: &str,
-    amount: Option<u128>,
-) -> Result<TypedTransaction, Error> {
-    let chain_id = eth_provider.get_chainid().await?.as_u64();
-    let eth_nonce = eth_provider.next();
-
-    let to = {
-        if let Ok(addr) = NameOrAddress::from_str(dest) {
-            addr
-        } else {
-            let addr = hex::decode("AD8A02c8D7E01C72228A027F9ccfbE9d78310ca9")?;
-            let addr = <[u8; 20] as TryFrom<Vec<u8>>>::try_from(addr.clone())
-                .map_err(|_| Error::FailedToConvertPayloadTo20Bytes(addr))?;
-            NameOrAddress::Address(addr.into())
-        }
-    };
-
-    let amount = amount.unwrap_or(100_000_000_000_000u128);
-
-    let mut eth_transaction: TypedTransaction = TransactionRequest {
-        from: Some(from.clone().to_eth_address()),
-        to: Some(to),
-        value: Some(amount.into()),
-        nonce: Some(eth_nonce),
-        chain_id: Some(chain_id.into()),
-        gas: None,
-        gas_price: None,
-        data: None,
-    }
-    .into();
-
-    eth_provider
-        .fill_transaction(&mut eth_transaction, None)
-        .await?;
-    Ok(eth_transaction)
-}
-
-pub async fn eth_sepolia_bridge_to_base_payload(
-    eth_provider: Arc<EvmClient>,
-    from: PublicKey,
-    _amount: Option<u128>,
-) -> Result<TypedTransaction, Error> {
-    let chain_id = eth_provider.get_chainid().await?.as_u64();
-    let eth_nonce = eth_provider.next();
-
-    let l1_bridge_addr: ContractAddress =
-        ContractAddress::from_str(ETH_SEPOLIA_BASE_STANDARD_BRIDGE_ADDRESS)?;
-    let bridge = L1StandardBridge::new(l1_bridge_addr, eth_provider.clone());
-
-    let amount = _amount.unwrap_or(1_000_000_000_000_000u128);
-
-    let extra_data: Vec<u8> = vec![]; // empty
-    let min_gas_limit: u32 = 400_000;
-    let call = bridge
-        .deposit_eth(min_gas_limit, extra_data.into())
-        .value(amount) // attach 0.01 ETH
-        .gas(4_000_000u64); // example gas limit override
-
-    let calldata = call
-        .calldata()
-        .ok_or(Error::Other("No calldata".to_string()))?;
-    let to = call
-        .tx
-        .to()
-        .ok_or(Error::Other("No to address".to_string()))?;
-    let value = call
-        .tx
-        .value()
-        .ok_or(Error::Other("No value".to_string()))?;
-    let gas_limit = call
-        .tx
-        .gas()
-        .ok_or(Error::Other("No gas limit".to_string()))?;
-
-    let from_addr = from.clone().to_eth_address();
-    let gas_price = eth_provider.get_gas_price().await?;
-
-    let mut eth_transaction: TypedTransaction = TransactionRequest {
-        from: Some(from_addr),
-        to: Some(to.clone()),
-        value: Some(value.clone()),
-        nonce: Some(eth_nonce),
-        chain_id: Some(chain_id.into()),
-        gas: Some(gas_limit.clone()),
-        gas_price: Some(gas_price),
-        data: Some(calldata),
-    }
-    .into();
-
-    eth_provider
-        .fill_transaction(&mut eth_transaction, None)
-        .await?;
-
-    Ok(eth_transaction)
-}
-
-pub async fn eth_get_uniswap_amounts_out(
-    router: &UniswapV2Router02<EvmClient>,
-    amount: U256,
-    path: Vec<ContractAddress>,
-) -> Result<Vec<U256>, Error> {
-    let call = router.get_amounts_out(amount, path).call().await?; // read-only call
-
-    Ok(call)
-}
-
-pub async fn eth_uniswap_eth_for_token_payload(
-    eth_provider: Arc<EvmClient>,
-    from: PublicKey,
-    _amount: Option<u128>,
-    slippage_in_percent: u64,
-    token_address: ContractAddress,
-    testnet: bool,
-) -> Result<TypedTransaction, Error> {
-    let chain_id = eth_provider.get_chainid().await?.as_u64();
-    let eth_nonce = eth_provider.next();
-
-    let amount = U256::from(_amount.unwrap_or(1_000_000_000_000_000u128));
-
-    let router_address: ContractAddress = if testnet {
-        ContractAddress::from_str(ETH_SEPOLIA_UNISWAP_V2_ROUTER)?
-    } else {
-        ContractAddress::from_str(ETH_MAINNET_UNISWAP_V2_ROUTER)?
-    };
-    let router = UniswapV2Router02::new(router_address, eth_provider.clone());
-
-    let weth = if testnet {
-        ContractAddress::from_str(WETH_SEPOLIA)?
-    } else {
-        ContractAddress::from_str(WETH_MAINNET)?
-    };
-
-    let path = vec![weth, token_address];
-
-    let estimated_out = eth_get_uniswap_amounts_out(&router, amount, path.clone()).await?;
-    let deadline = U256::from(chrono::Utc::now().timestamp() + 60); // 60 secs from now
-
-    let estimated_out = estimated_out.last().unwrap();
-
-    // 100% == 10_000 BIPS.
-    let one_hundred_percent = U256::from(10_000u64);
-
-    let slippage_bps = U256::from(slippage_in_percent * 100u64);
-
-    let min_out = (estimated_out * (one_hundred_percent - slippage_bps)) / one_hundred_percent;
-
-    info!(
-        "Swapping {:?} ETH for {:?}, Slippage: {}%",
-        amount, min_out, slippage_in_percent
-    );
-
-    let call = router
-        .swap_exact_eth_for_tokens(min_out, path, from.clone().to_eth_address(), deadline)
-        .value(amount)
-        .gas(1_000_000u64);
-
-    let calldata = call
-        .calldata()
-        .ok_or(Error::Other("No calldata".to_string()))?;
-    let to = call
-        .tx
-        .to()
-        .ok_or(Error::Other("No to address".to_string()))?;
-    let value = call
-        .tx
-        .value()
-        .ok_or(Error::Other("No value".to_string()))?;
-    let gas_limit = call
-        .tx
-        .gas()
-        .ok_or(Error::Other("No gas limit".to_string()))?;
-
-    let from_addr = from.clone().to_eth_address();
-    let gas_price = eth_provider.get_gas_price().await?;
-
-    let mut eth_transaction: TypedTransaction = TransactionRequest {
-        from: Some(from_addr),
-        to: Some(to.clone()),
-        value: Some(value.clone()),
-        nonce: Some(eth_nonce),
-        chain_id: Some(chain_id.into()),
-        gas: Some(gas_limit.clone()),
-        gas_price: Some(gas_price),
-        data: Some(calldata),
-    }
-    .into();
-
-    eth_provider
-        .fill_transaction(&mut eth_transaction, None)
-        .await?;
-
-    Ok(eth_transaction)
-}
-
-pub async fn avalanche_liquid_stake_payload(
-    evm_provider: Arc<EvmClient>,
-    from: PublicKey,
-    amount: Option<u128>,
-) -> Result<TypedTransaction, Error> {
-    let chain_id = evm_provider.get_chainid().await?.as_u64();
-    let is_testnet = chain_id == 43113;
-    let nonce = evm_provider.next();
-
-    let ca = if is_testnet {
-        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_TESTNET)?
-    } else {
-        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_MAINNET)?
-    };
-    let to = NameOrAddress::from(ca.clone());
-    let contract = AvaxLiquidStakingANKR::new(ca, evm_provider.clone());
-
-    let call = contract.stake_and_claim_certs();
-    let calldata: Bytes = call
-        .calldata()
-        .ok_or(Error::Other("No calldata".to_string()))?;
-
-    let value = amount.unwrap_or(1_000_000_000_000_000_000u128);
-
-    let mut eth_transaction: TypedTransaction = TransactionRequest {
-        from: Some(from.clone().to_eth_address()),
-        to: Some(to.clone()),
-        value: Some(value.into()),
-        nonce: Some(nonce),
-        chain_id: Some(chain_id.into()),
-        gas: None,
-        gas_price: None,
-        data: Some(calldata),
-    }
-    .into();
-
-    evm_provider
-        .fill_transaction(&mut eth_transaction, None)
-        .await?;
-
-    Ok(eth_transaction)
-}
-
-pub async fn avalanche_liquid_unstake_payload(
-    evm_provider: Arc<EvmClient>,
-    from: PublicKey,
-) -> Result<TypedTransaction, Error> {
-    let chain_id = evm_provider.get_chainid().await?.as_u64();
-    let is_testnet = chain_id == 43113;
-    let nonce = evm_provider.next();
-
-    let ca = if is_testnet {
-        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_TESTNET)?
-    } else {
-        ContractAddress::from_str(AVALANCHE_LIQUID_STAKE_MAINNET)?
-    };
-    let to = NameOrAddress::from(ca.clone());
-    let contract = AvaxLiquidStakingANKR::new(ca, evm_provider.clone());
-
-    let call = contract.claim_certs(0u128.into());
-    let calldata: Bytes = call
-        .calldata()
-        .ok_or(Error::Other("No calldata".to_string()))?;
-
-    let mut eth_transaction: TypedTransaction = TransactionRequest {
-        from: Some(from.clone().to_eth_address()),
-        to: Some(to.clone()),
-        value: Some(0u128.into()),
-        nonce: Some(nonce),
-        chain_id: Some(chain_id.into()),
-        gas: None,
-        gas_price: None,
-        data: Some(calldata),
-    }
-    .into();
-
-    evm_provider
-        .fill_transaction(&mut eth_transaction, None)
-        .await?;
-
-    Ok(eth_transaction)
-}
-
-pub async fn evm_sign_and_send_transaction(
-    eth_provider: Arc<EvmClient>,
-    eth_transaction: TypedTransaction,
-    eth_signature: ethers::types::Signature,
-) -> Result<TransactionReceipt, Error> {
-    let signed_transaction = eth_transaction.rlp_signed(&eth_signature);
-
-    info!("Submitting the transaction...");
-
-    let pending = eth_provider
-        .send_raw_transaction(signed_transaction.clone())
-        .await?;
-
-    info!("Pending: {:?}", pending);
-
-    Ok(pending
-        .await?
-        .ok_or(Error::Other("failed to send eth transaction".to_string()))?)
-}
-
-pub async fn btc_create_transfer_payload(
-    from: PublicKey,
-    dest: &str,
-    amount: Option<u64>,
-) -> Result<BtcPayload, Error> {
-    let encoded_point_compressed = from.into_affine().to_encoded_point(true);
-
-    let compressed_public_key =
-        CompressedPublicKey::from_slice(encoded_point_compressed.as_bytes()).unwrap();
-
-    let from = testnet_btc_address(compressed_public_key);
-
-    let amount = bitcoin::Amount::from_sat(amount.unwrap_or(100));
-
-    let unsigned_tx = buildUnsignedTransaction(
-        from,
-        dest.to_string(),
-        // String::from("CFqoZmZ3ePwK5wnkhxJjJAQKJ82C7RJdmd"),
-        amount.to_sat().to_string(),
-    )
-    .await;
-
-    let sig_hash = hex::decode(hashFromUnsignedTx(unsigned_tx.clone()).replace("0x", "")).unwrap();
-
-    Ok(BtcPayload {
-        sighash: <[u8; 32]>::try_from(sig_hash.clone())
-            .map_err(|_| Error::FailedToConvertPayloadTo32Bytes(sig_hash))?,
-        unsigned_tx,
-        compressed_public_key,
-    })
-}
-
-pub async fn btc_sign_and_send_transaction(
-    btc_payload: BtcPayload,
-    mpc_sig: MpcSignatureDelivered,
-) -> Result<String, Error> {
-    let bitcoin_signature = btc_sig_from_mpc_sig(mpc_sig).signature.serialize_der();
-
-    let hex_sig = hex::encode(bitcoin_signature.to_vec());
-
-    let pubkey = hex::encode(btc_payload.compressed_public_key.to_bytes());
-
-    let res = fillTxAndSubmit(btc_payload.unsigned_tx, hex_sig, pubkey).await;
-
-    res.as_string()
-        .ok_or(Error::Other("Failed to get tx hash".to_string()))
-}
-
-pub async fn internal_request_mpc_signature_payload(
-    payload: [u8; 32],
-    client: &CentrumClient,
-    rpc: &CentrumRpcClient,
-    signer: &CentrumMultiSigner,
-) -> Result<MpcSignatureDelivered, Error> {
-    let partial_ext = create_partial_extrinsic(
-        rpc,
-        client,
-        signer.account_id(),
-        request_mpc_signature_payload(payload).await,
-    )
-    .await?;
-
-    let submittable = apply_native_signature_to_transaction(
-        &partial_ext,
-        signer.account_id(),
-        demo_sign_native_with_signer(&partial_ext, signer).await,
-    )
-    .await;
-
-    let delivered = submit_mpc_signature_request(client, rpc, submittable).await?;
-    Ok(MpcSignatureDelivered {
-        payload: delivered.payload.to_vec(),
-        epsilon: delivered.epsilon.to_vec(),
-        big_r: delivered.big_r,
-        s: delivered.s,
-    })
-}
-
-#[wasm_bindgen(getter_with_clone)]
-#[derive(Debug, Clone)]
-pub struct MpcSignatureDelivered {
-    /// [u8; 32]
-    pub payload: Vec<u8>,
-    /// [u8; 32]
-    pub epsilon: Vec<u8>,
-    pub big_r: Vec<u8>,
-    pub s: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BtcPayload {
-    pub unsigned_tx: JsValue,
-    pub compressed_public_key: CompressedPublicKey,
-    pub sighash: [u8; 32],
-}
 
 #[derive(Debug, Clone)]
 pub struct HyperLiquidClient {
@@ -722,13 +61,15 @@ pub struct HyperLiquidClient {
     pub exchange_client: Arc<ExchangeClient>,
 }
 
+/// Struct representing a Centrum SDK client, provides a high level interface for interacting with the centrum network,
+/// as well as btc and any other evm compatible chains.
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
-pub struct Demo {
+pub struct DemoClient {
     #[wasm_bindgen(skip)]
-    pub client: CentrumClient,
+    pub native_client: NativeClient,
     #[wasm_bindgen(skip)]
-    pub rpc: CentrumRpcClient,
+    pub native_rpc: NativeRpcClient,
     #[wasm_bindgen(skip)]
     pub eth_client: Arc<EvmClient>,
     #[wasm_bindgen(skip)]
@@ -739,22 +80,22 @@ pub struct Demo {
     pub custom_clients_map: HashMap<String, Arc<EvmClient>>,
     #[wasm_bindgen(skip)]
     pub signer: CentrumMultiSigner,
-    #[wasm_bindgen(getter_with_clone)]
+    #[wasm_bindgen(skip)]
     pub signer_mpc_public_key: PublicKey,
     #[wasm_bindgen(skip)]
     pub compressed_public_key: CompressedPublicKey,
 }
 
 #[wasm_bindgen]
-impl Demo {
+impl DemoClient {
     async fn create_clients(
         signer: CentrumMultiSigner,
         centrum_node_url: &str,
         eth_testnet: bool,
     ) -> Result<
         (
-            CentrumRpcClient,
-            CentrumClient,
+            NativeRpcClient,
+            NativeClient,
             EvmClient,
             EvmClient,
             HyperLiquidClient,
@@ -832,24 +173,24 @@ impl Demo {
     }
 
     #[wasm_bindgen(constructor)]
-    pub async fn new_alice(centrum_node_url: &str, eth_testnet: bool) -> Result<Demo, Error> {
+    pub async fn new_alice(centrum_node_url: &str, eth_testnet: bool) -> Result<DemoClient, Error> {
         #[cfg(all(debug_assertions, feature = "console_log_dep"))]
         console_log::init_with_level(log::Level::Debug)?;
 
         let signer = csigner();
         let (
-            rpc,
-            client,
+            native_rpc,
+            native_client,
             eth_client,
             avax_c_client,
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
-        ) = Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        ) = DemoClient::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
-        Ok(Demo {
-            client,
-            rpc,
+        Ok(DemoClient {
+            native_client,
+            native_rpc,
             eth_client: Arc::new(eth_client),
             avax_c_client: Arc::new(avax_c_client),
             hyperliquid_client,
@@ -864,7 +205,7 @@ impl Demo {
         centrum_node_url: &str,
         seed_phrase: &str,
         eth_testnet: bool,
-    ) -> Result<Demo, Error> {
+    ) -> Result<DemoClient, Error> {
         #[cfg(all(debug_assertions, feature = "console_log_dep"))]
         console_log::init_with_level(log::Level::Debug)?;
         let uri = SecretUri::from_str(seed_phrase).map_err(|e| Error::Other(e.to_string()))?;
@@ -873,18 +214,18 @@ impl Demo {
             .into();
 
         let (
-            rpc,
-            client,
+            native_rpc,
+            native_client,
             eth_client,
             avax_c_client,
             hyperliquid_client,
             signer_mpc_public_key,
             compressed_public_key,
-        ) = Demo::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
+        ) = DemoClient::create_clients(signer.clone(), centrum_node_url, eth_testnet).await?;
 
-        Ok(Demo {
-            client,
-            rpc,
+        Ok(DemoClient {
+            native_client,
+            native_rpc,
             eth_client: Arc::new(eth_client),
             avax_c_client: Arc::new(avax_c_client),
             hyperliquid_client,
@@ -905,7 +246,13 @@ impl Demo {
             .try_into()
             .map_err(|_| Error::FailedToConvertPayloadTo32Bytes(payload))?;
 
-        internal_request_mpc_signature_payload(payload, &self.client, &self.rpc, &self.signer).await
+        internal_request_mpc_signature_payload(
+            payload,
+            &self.native_client,
+            &self.native_rpc,
+            &self.signer,
+        )
+        .await
     }
 
     async fn sign_and_submit_eth_transaction(
@@ -1171,8 +518,8 @@ impl Demo {
 
         let mpc_signature = internal_request_mpc_signature_payload(
             eth_sighash.0.clone(),
-            &self.client,
-            &self.rpc,
+            &self.native_client,
+            &self.native_rpc,
             &self.signer,
         )
         .await?;
@@ -1333,7 +680,7 @@ impl Demo {
             .account(Static::from(self.signer.account_id()));
 
         let res = self
-            .client
+            .native_client
             .storage()
             .at_latest()
             .await?
